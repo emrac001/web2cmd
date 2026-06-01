@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0b0e14;
+  --panel: #11151f;
+  --border: #1f2633;
+  --accent: #4d9fff;
+  --text: #d7dce5;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* keep the layout stable when the mobile keyboard opens */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* xterm fills its container */
+.xterm,
+.xterm-viewport {
+  height: 100% !important;
+}
+.xterm-viewport {
+  /* momentum scrolling on iOS */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* hide scrollbars on the touch toolbar */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Select mode: let the OS select terminal text (long-press + drag), instead of xterm
+   intercepting touches. Copy then reads the native selection. */
+.select-mode .xterm,
+.select-mode .xterm .xterm-screen,
+.select-mode .xterm .xterm-rows {
+  touch-action: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
+}
+.select-mode .xterm .xterm-rows {
+  pointer-events: auto !important;
+}
+/* the hidden input must not swallow touches while selecting */
+.select-mode .xterm-helper-textarea {
+  display: none !important;
+}
+/* a subtle hint that select mode is active */
+.select-mode .xterm-screen {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}

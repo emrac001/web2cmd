@@ -1,0 +1,424 @@
+/**
+ * Web2cmd server entrypoint.
+ *
+ * Serves the built web app, exposes a small REST API (auth, sessions, filesystem), and runs
+ * a WebSocket endpoint (/ws) that bridges browser terminals to shared PTY sessions running
+ * on this machine. Every REST call and the WS upgrade require a valid token.
+ */
+import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
+import { WebSocketServer, WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { URL } from "node:url";
+
+import { loadConfig, repoRoot } from "./config.js";
+import {
+  checkAccess,
+  extractToken,
+  isPasswordConfigured,
+  issueToken,
+  setPassword,
+  verifyPassword,
+} from "./auth.js";
+import { ensureIdentity, fingerprint } from "./identity.js";
+import { currentOtp, rotateOtp, verifyOtp } from "./pairing.js";
+import { FenceManager, installClaudeHook, writeFenceScript } from "./fence.js";
+import { timingSafeEqual } from "node:crypto";
+import { SessionManager } from "./sessions.js";
+import { browseDir, listProject, readProjectFile, writeProjectFile } from "./files.js";
+import { PushManager } from "./push.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const cfg = loadConfig();
+
+// Project fence: the authoritative checker + the generated PowerShell guard script handed to
+// each shell. The Claude hook lives at <repo>/scripts/fence-hook.mjs.
+const fence = cfg.fence === "on" ? new FenceManager(cfg.dataDir) : null;
+const fenceHookScript = process.env.WEB2CMD_FENCE_HOOK
+  ? resolve(process.env.WEB2CMD_FENCE_HOOK)
+  : join(repoRoot, "scripts", "fence-hook.mjs");
+const fenceSpawn = fence
+  ? { scriptPath: writeFenceScript(cfg.dataDir), secret: fence.secret, url: `http://127.0.0.1:${cfg.port}` }
+  : null;
+
+const sessions = new SessionManager(cfg.dataDir, fenceSpawn);
+const push = new PushManager(cfg);
+
+// When a session looks like it's waiting for a confirmation, push to subscribed phones.
+sessions.setWaitingHandler((info, snippet) => {
+  push
+    .notifyAll({
+      title: `Claude needs you — ${info.title}`,
+      body: snippet,
+      sessionId: info.id,
+      tag: info.id,
+    })
+    .catch(() => {});
+});
+
+// First-boot / rotate password from env if provided.
+if (process.env.WEB2CMD_PASSWORD) {
+  setPassword(cfg, process.env.WEB2CMD_PASSWORD);
+  console.log("[web2cmd] password set from WEB2CMD_PASSWORD env");
+}
+
+// Stable server identity — generated once, pinned by clients (TOFU). Exposed via /api/server-info.
+const identity = ensureIdentity(cfg);
+const identityFp = fingerprint(identity.publicKey);
+
+// Auth is optional in v2. If password mode is selected but no password is set, we can't gate.
+if (cfg.authMode === "password" && !isPasswordConfigured(cfg)) {
+  console.error(
+    "\n[web2cmd] auth=password but no password is configured. Set one:\n" +
+      "  pnpm --filter @web2cmd/server set-password -- <your-password>\n" +
+      "  (or start once with WEB2CMD_PASSWORD=<your-password>)\n" +
+      "  — or run with WEB2CMD_AUTH=off for localhost/LAN use.\n",
+  );
+  process.exit(1);
+}
+
+// Safety coupling: an unauthenticated terminal may only be served locally. Anything remote/
+// tunnelled is gated by device pairing — a fresh client must enter the OTP printed below before
+// it can reach the API. We mint the first code here so it's on screen as the tunnel comes up.
+function printPairingCode(): void {
+  const { code, expiresInMs } = currentOtp();
+  const mins = Math.round(expiresInMs / 60000);
+  console.log(
+    `\n[web2cmd] ── PAIRING CODE: ${code} ──  (valid ~${mins} min)\n` +
+      "[web2cmd] Enter this on the client to pair this device.\n",
+  );
+}
+
+const webDist = process.env.WEB2CMD_WEB_DIST
+  ? resolve(process.env.WEB2CMD_WEB_DIST)
+  : resolve(__dirname, "..", "..", "web", "dist");
+const hasWebBuild = existsSync(join(webDist, "index.html"));
+
+const app = Fastify({ logger: false });
+
+// ---- auth gate for the REST API -------------------------------------------------------
+// Unauthenticated bootstrap endpoints; everything else goes through checkAccess.
+const PUBLIC_PATHS = new Set([
+  "/api/login",
+  "/api/pair",
+  "/api/health",
+  "/api/server-info",
+  "/api/fence/check", // called by the local shell, authenticated by the fence secret instead
+]);
+app.addHook("onRequest", async (req, reply) => {
+  if (!req.url.startsWith("/api/")) return; // static assets are public
+  const path = req.url.split("?")[0];
+  if (PUBLIC_PATHS.has(path)) return;
+  const token = extractToken(req.headers.authorization, undefined);
+  if (!checkAccess(cfg, token)) {
+    reply.code(401).send({ error: "unauthorized" });
+  }
+});
+
+// ---- REST API -------------------------------------------------------------------------
+app.get("/api/health", async () => ({ ok: true }));
+
+// Public bootstrap: lets the client learn whether to log in and pin the server's identity.
+app.get("/api/server-info", async () => ({
+  authMode: cfg.authMode,
+  exposure: cfg.exposure,
+  fence: cfg.fence,
+  identity: { publicKey: identity.publicKey, fingerprint: identityFp },
+}));
+
+app.post<{ Body: { password?: string } }>("/api/login", async (req, reply) => {
+  if (cfg.authMode === "off") {
+    return reply.code(400).send({ error: "auth is disabled on this server" });
+  }
+  const { password } = req.body ?? {};
+  if (!password || !verifyPassword(cfg, password)) {
+    return reply.code(401).send({ error: "invalid password" });
+  }
+  return { token: issueToken(cfg, "session") };
+});
+
+// Device pairing: exchange a valid OTP (+ the password, when auth=password) for a device token.
+app.post<{ Body: { otp?: string; password?: string } }>("/api/pair", async (req, reply) => {
+  const { otp, password } = req.body ?? {};
+  if (!otp || !verifyOtp(otp)) {
+    return reply.code(401).send({ error: "invalid or expired pairing code" });
+  }
+  if (cfg.authMode === "password" && !(password && verifyPassword(cfg, password))) {
+    return reply.code(401).send({ error: "password required" });
+  }
+  // Single-use: burn the code now and surface a fresh one on the server console.
+  rotateOtp();
+  printPairingCode();
+  return { token: issueToken(cfg, "device") };
+});
+
+app.get("/api/config", async () => ({
+  defaultCwd: cfg.defaultCwd,
+  platform: process.platform,
+  pathSep: process.platform === "win32" ? "\\" : "/",
+}));
+
+app.get("/api/sessions", async () => ({ sessions: sessions.list() }));
+
+app.post<{
+  Body: {
+    cwd?: string;
+    cols?: number;
+    rows?: number;
+    startClaude?: boolean;
+    claudeMode?: "new" | "continue";
+    title?: string;
+  };
+}>("/api/sessions", async (req, reply) => {
+  const { cwd, cols, rows, startClaude, claudeMode, title } = req.body ?? {};
+  if (!cwd || !existsSync(cwd)) {
+    return reply.code(400).send({ error: "cwd does not exist" });
+  }
+  // node-pty cannot pass initial keystrokes; we spawn the shell, then write the command.
+  const info = sessions.create({ cwd, cols, rows, title });
+  // claudeMode takes precedence; startClaude (legacy) means "new".
+  const mode = claudeMode ?? (startClaude ? "new" : undefined);
+  if (mode) {
+    const s = sessions.get(info.id);
+    // `claude --continue` resumes the most recent conversation in this folder (req #6 resume).
+    const cmd = mode === "continue" ? "claude --continue\r" : "claude\r";
+    // small delay so the shell prompt is ready before we type
+    setTimeout(() => s?.write(cmd), 600);
+  }
+  return info;
+});
+
+app.delete<{ Params: { id: string } }>("/api/sessions/:id", async (req) => ({
+  killed: sessions.kill(req.params.id),
+}));
+
+// ---- filesystem (project picker + editor) --------------------------------------------
+app.get<{ Querystring: { path?: string } }>("/api/fs/browse", async (req, reply) => {
+  try {
+    return await browseDir(req.query.path || cfg.defaultCwd);
+  } catch (e) {
+    return reply.code(400).send({ error: String((e as Error).message) });
+  }
+});
+
+app.get<{ Querystring: { root?: string; rel?: string } }>("/api/fs/list", async (req, reply) => {
+  if (!req.query.root) return reply.code(400).send({ error: "root required" });
+  try {
+    return await listProject(req.query.root, req.query.rel || ".");
+  } catch (e) {
+    return reply.code(400).send({ error: String((e as Error).message) });
+  }
+});
+
+app.get<{ Querystring: { root?: string; path?: string } }>("/api/fs/read", async (req, reply) => {
+  if (!req.query.root || !req.query.path)
+    return reply.code(400).send({ error: "root and path required" });
+  try {
+    return { content: await readProjectFile(req.query.root, req.query.path) };
+  } catch (e) {
+    return reply.code(400).send({ error: String((e as Error).message) });
+  }
+});
+
+app.post<{ Body: { root?: string; path?: string; content?: string } }>(
+  "/api/fs/write",
+  async (req, reply) => {
+    const { root, path, content } = req.body ?? {};
+    if (!root || !path || content === undefined)
+      return reply.code(400).send({ error: "root, path, content required" });
+    try {
+      await writeProjectFile(root, path, content);
+      return { ok: true };
+    } catch (e) {
+      return reply.code(400).send({ error: String((e as Error).message) });
+    }
+  },
+);
+
+// ---- web push --------------------------------------------------------------------------
+app.get("/api/push/key", async () => ({ publicKey: push.publicKey }));
+
+app.post<{ Body: { subscription?: unknown } }>("/api/push/subscribe", async (req, reply) => {
+  const sub = req.body?.subscription as any;
+  if (!sub?.endpoint) return reply.code(400).send({ error: "invalid subscription" });
+  push.subscribe(sub);
+  return { ok: true, count: push.count() };
+});
+
+app.post<{ Body: { endpoint?: string } }>("/api/push/unsubscribe", async (req) => {
+  if (req.body?.endpoint) push.unsubscribe(req.body.endpoint);
+  return { ok: true, count: push.count() };
+});
+
+app.post("/api/push/test", async () => {
+  const res = await push.notifyAll({
+    title: "Web2cmd",
+    body: "Push notifications are working 🎉",
+  });
+  return res;
+});
+
+// ---- project fence ---------------------------------------------------------------------
+function secretOk(provided: unknown): boolean {
+  if (!fence || typeof provided !== "string") return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(fence.secret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// Called by the local PowerShell fence script before every cd. Authenticated by the fence
+// secret (not the user token), since it's the server's own shell asking over localhost.
+app.post<{ Body: { root?: string; target?: string; secret?: string } }>(
+  "/api/fence/check",
+  async (req, reply) => {
+    if (!fence) return { allowed: true, reason: "fence-off" };
+    const { root, target, secret } = req.body ?? {};
+    if (!secretOk(secret)) return reply.code(403).send({ error: "bad fence secret" });
+    if (!root || !target) return reply.code(400).send({ error: "root and target required" });
+    return fence.check(root, target);
+  },
+);
+
+app.get("/api/fence/denials", async () => ({ denials: fence ? fence.listDenials() : [] }));
+
+app.post<{ Body: { root?: string; path?: string; mode?: "once" | "always" } }>(
+  "/api/fence/allow",
+  async (req, reply) => {
+    if (!fence) return reply.code(400).send({ error: "fence is disabled" });
+    const { root, path, mode } = req.body ?? {};
+    if (!root || !path) return reply.code(400).send({ error: "root and path required" });
+    fence.grant(root, path, mode === "once" ? "once" : "always");
+    return { ok: true };
+  },
+);
+
+// Opt-in: install the Claude PreToolUse fence hook into a project's .claude/settings.json.
+app.post<{ Body: { root?: string } }>("/api/fence/install-claude-hook", async (req, reply) => {
+  const { root } = req.body ?? {};
+  if (!root) return reply.code(400).send({ error: "root required" });
+  try {
+    return installClaudeHook(root, fenceHookScript);
+  } catch (e) {
+    return reply.code(400).send({ error: String((e as Error).message) });
+  }
+});
+
+// ---- static web app (SPA) -------------------------------------------------------------
+// Registered inside start() (before app.ready()) so this module has no top-level await — which
+// keeps it bundleable into the CJS single-file .exe.
+async function registerStatic(): Promise<void> {
+  if (hasWebBuild) {
+    await app.register(fastifyStatic, { root: webDist, prefix: "/" });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith("/api/")) return reply.code(404).send({ error: "not found" });
+      return reply.sendFile("index.html");
+    });
+  } else {
+    app.get("/", async (_req, reply) => {
+      reply
+        .code(200)
+        .type("text/plain")
+        .send(
+          "Web2cmd API is running, but the web app has not been built yet.\n" +
+            "Run `pnpm --filter @web2cmd/web build` (or `pnpm dev:web` for development).",
+        );
+    });
+  }
+}
+
+// ---- WebSocket terminal bridge --------------------------------------------------------
+const wss = new WebSocketServer({ noServer: true });
+
+wss.on("connection", (ws: WebSocket, sessionId: string) => {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    ws.send(JSON.stringify({ type: "error", message: "session not found" }));
+    ws.close();
+    return;
+  }
+
+  const clientId = randomUUID();
+  session.attach({
+    id: clientId,
+    cols: 80,
+    rows: 24,
+    send: (data) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "output", data }));
+    },
+  });
+
+  ws.send(JSON.stringify({ type: "ready", sessionId, clientId }));
+
+  ws.on("message", (raw) => {
+    let msg: { type?: string; data?: string; cols?: number; rows?: number };
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+    if (msg.type === "input" && typeof msg.data === "string") {
+      session.write(msg.data);
+    } else if (msg.type === "resize" && msg.cols && msg.rows) {
+      session.resizeClient(clientId, msg.cols, msg.rows);
+    }
+  });
+
+  ws.on("close", () => {
+    session.detach(clientId);
+    sessions.reap();
+  });
+});
+
+async function start() {
+  await registerStatic();
+  await app.ready();
+  app.server.on("upgrade", (request, socket, head) => {
+    const url = new URL(request.url || "", `http://${request.headers.host}`);
+    if (url.pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    const token = url.searchParams.get("token");
+    if (!checkAccess(cfg, token)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const sessionId = url.searchParams.get("session") || "";
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, sessionId);
+    });
+  });
+
+  await app.listen({ host: cfg.host, port: cfg.port });
+  console.log(`\n[web2cmd] listening on http://${cfg.host}:${cfg.port}`);
+  console.log(`[web2cmd] auth: ${cfg.authMode}  ·  exposure: ${cfg.exposure}  ·  fence: ${cfg.fence}`);
+  console.log(`[web2cmd] identity: ${identityFp}`);
+  if (cfg.exposure === "remote") {
+    // Remote clients must pair — show the code, and let the operator press Enter for a fresh one.
+    printPairingCode();
+    if (process.stdin.isTTY) {
+      process.stdin.on("data", () => {
+        rotateOtp();
+        printPairingCode();
+      });
+    }
+  } else if (cfg.authMode === "off") {
+    console.log("[web2cmd] ⚠ auth is OFF — anyone who can reach this address gets a shell.");
+  }
+  console.log(`[web2cmd] web build: ${hasWebBuild ? "served" : "NOT built yet"}`);
+  console.log(`[web2cmd] data dir: ${cfg.dataDir}\n`);
+}
+
+process.on("SIGINT", () => {
+  sessions.killAll();
+  process.exit(0);
+});
+
+start().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

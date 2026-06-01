@@ -1,0 +1,23 @@
+{
+  "name": "web2cmd",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Mobile-first web terminal + file editor that drives a shell (including Claude Code) running on your own laptop.",
+  "scripts": {
+    "dev:server": "pnpm --filter @web2cmd/server dev",
+    "dev:web": "pnpm --filter @web2cmd/web dev",
+    "build": "pnpm --filter @web2cmd/web build && pnpm --filter @web2cmd/server build",
+    "build:exe": "pnpm build && node scripts/build-exe.mjs",
+    "start": "pnpm --filter @web2cmd/server start"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "node-pty"
+    ]
+  }
+}

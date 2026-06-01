@@ -1,0 +1,14 @@
+packages:
+  - "server"
+  - "web"
+
+allowBuilds:
+  esbuild: true
+  node-pty: true
+
+# node-pty 1.1.0 and esbuild ship prebuilt binaries (verified working), so their
+# install/build scripts are not needed. Acknowledge them explicitly to silence
+# pnpm's ignored-builds gate.
+ignoredBuiltDependencies:
+  - esbuild
+  - node-pty

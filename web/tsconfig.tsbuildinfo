@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/filespanel.tsx","./src/components/identitychanged.tsx","./src/components/login.tsx","./src/components/pairing.tsx","./src/components/projectpicker.tsx","./src/components/terminal.tsx","./src/components/touchbar.tsx","./src/lib/api.ts","./src/lib/lineeditor.ts","./src/lib/push.ts"],"version":"5.9.3"}
