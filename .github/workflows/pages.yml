@@ -32,7 +32,9 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # Only the web package — avoids building the server's native node-pty (no Linux prebuild)
+      # on the runner; the client build doesn't need it.
+      - run: pnpm install --frozen-lockfile --filter @web2cmd/web
       - name: Build web client (base = /<repo>/ for project Pages)
         env:
           WEB2CMD_BASE: /${{ github.event.repository.name }}/

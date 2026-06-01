@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
+  "packageManager": "pnpm@11.1.0",
   "description": "Mobile-first web terminal + file editor that drives a shell (including Claude Code) running on your own laptop.",
   "scripts": {
     "dev:server": "pnpm --filter @web2cmd/server dev",
