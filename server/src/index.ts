@@ -99,6 +99,26 @@ const hasWebBuild = existsSync(join(webDist, "index.html"));
 
 const app = Fastify({ logger: false });
 
+// ---- CORS --------------------------------------------------------------------------------
+// Lets the client be hosted on a *different* origin (e.g. GitHub Pages) and still reach this
+// server over its tunnel/LAN URL. Auth is via Bearer token (not cookies), so reflecting the
+// request origin is not a CSRF risk — a malicious page still can't read another origin's token.
+// Restrict with WEB2CMD_ALLOW_ORIGIN (comma-separated) if you want an explicit allowlist.
+const corsAllowList = process.env.WEB2CMD_ALLOW_ORIGIN
+  ? process.env.WEB2CMD_ALLOW_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean)
+  : null;
+app.addHook("onRequest", async (req, reply) => {
+  const origin = req.headers.origin;
+  if (origin && (!corsAllowList || corsAllowList.includes(origin))) {
+    reply.header("access-control-allow-origin", origin);
+    reply.header("vary", "Origin");
+    reply.header("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+    reply.header("access-control-allow-headers", "authorization, content-type");
+    reply.header("access-control-max-age", "86400");
+  }
+  if (req.method === "OPTIONS") reply.code(204).send(); // preflight — short-circuit before auth
+});
+
 // ---- auth gate for the REST API -------------------------------------------------------
 // Unauthenticated bootstrap endpoints; everything else goes through checkAccess.
 const PUBLIC_PATHS = new Set([

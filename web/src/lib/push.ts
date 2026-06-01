@@ -28,7 +28,9 @@ export function pushSupported(): boolean {
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!pushSupported()) return null;
   try {
-    return await navigator.serviceWorker.register("/sw.js");
+    // Base-relative so it works whether the app is served at "/" (the server/.exe) or at a
+    // project subpath (e.g. GitHub Pages at /web2cmd/).
+    return await navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`);
   } catch {
     return null;
   }

@@ -1,6 +1,28 @@
 /** Thin REST client. The token is kept in localStorage and sent as a bearer header. */
 
 const TOKEN_KEY = "web2cmd_token";
+const SERVER_KEY = "web2cmd_server_url";
+
+/**
+ * Base URL of the Web2cmd server. Empty string = same origin (the normal case when the server
+ * itself serves the app, e.g. the .exe or the dev proxy). A non-empty value is used when the
+ * client is hosted separately (e.g. GitHub Pages) and must reach a server elsewhere.
+ */
+export function getServerBase(): string {
+  return localStorage.getItem(SERVER_KEY) || "";
+}
+export function setServerBase(url: string) {
+  const clean = url.trim().replace(/\/+$/, "");
+  if (clean) localStorage.setItem(SERVER_KEY, clean);
+  else localStorage.removeItem(SERVER_KEY);
+}
+/** WebSocket origin matching the server base (http→ws, https→wss); falls back to same origin. */
+export function wsBase(): string {
+  const base = getServerBase();
+  // https://… → wss://… and http://… → ws://… (replacing the leading "http" with "ws").
+  if (base) return base.replace(/^http/i, "ws");
+  return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+}
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -56,7 +78,7 @@ class ApiError extends Error {
 
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
-  const res = await fetch(path, {
+  const res = await fetch(getServerBase() + path, {
     ...init,
     headers: {
       "Content-Type": "application/json",

@@ -87,6 +87,31 @@ pnpm --filter @web2cmd/server set-password -- "<your-strong-password>"
 
 If a password already exists, auth defaults to `password` (so existing setups keep gating).
 
+## Host the client yourself (GitHub Pages)
+
+The web client is a **generic, static app** — it doesn't have to be served by your server. You can
+host it once at a stable URL (e.g. GitHub Pages) and point it at *any* Web2cmd server:
+
+- Install the PWA **once** from the stable `github.io` URL instead of re-adding the ephemeral
+  `trycloudflare` URL every time the tunnel restarts.
+- Anyone can run **their own** server and use the same hosted app pointed at **their own** tunnel —
+  nobody depends on a single tunnel for the app itself.
+
+On first load the app asks for your **server URL** (your tunnel or LAN address); it stores it and
+you pair once. Because the client trusts the server's pinned **identity**, not the URL, you just
+update the URL (☰ → Server → *Change server URL*) when the tunnel changes — your pairing and
+identity pin carry over.
+
+> The static client still needs to *reach* your laptop's server, so a tunnel/LAN is required for
+> the connection — Pages only removes the dependency on a tunnel to **deliver the app**.
+
+**Deploy:** the repo ships `.github/workflows/pages.yml`. In your fork: **Settings → Pages → Source
+= GitHub Actions**, then push to `main`. The app builds with `base=/<repo>/` and deploys to
+`https://<you>.github.io/<repo>/`. The server it talks to must allow the Pages origin for CORS —
+that's automatic (origins are reflected), or restrict it with `WEB2CMD_ALLOW_ORIGIN`.
+
+To build the hosted client locally: `WEB2CMD_BASE=/<repo>/ pnpm --filter @web2cmd/web build`.
+
 ## Package as a single .exe
 
 Ship the server as one self-contained Windows executable (Node SEA — bundles the server, the web
@@ -164,6 +189,7 @@ proxy (e.g. Cloudflare Access) in front of it.
 | `WEB2CMD_HOST`        | `0.0.0.0`               | bind address                                               |
 | `WEB2CMD_PORT`        | `8787`                  | port                                                       |
 | `WEB2CMD_PASSWORD`    | —                       | set/rotate the password on boot (optional)                 |
+| `WEB2CMD_ALLOW_ORIGIN`| — (reflect any)         | CORS allowlist (comma-separated) when the client is hosted on another origin |
 | `WEB2CMD_DATA_DIR`    | `<repo>/.web2cmd`       | hashed password, token secret, server identity, fence allowlist |
 | `WEB2CMD_TOKEN_TTL`   | `30d`                   | password-login (session) token lifetime                    |
 | `WEB2CMD_DEVICE_TTL`  | `365d`                  | paired-device token lifetime                               |
@@ -192,7 +218,9 @@ server/src/
   sea-bootstrap.ts / sea-entry.ts   single-.exe self-extraction + entry
 web/              Vite + React + Tailwind (xterm.js terminal, CodeMirror editor, PWA)
   src/lib/lineEditor.ts             client line editor (broadcast-on-submit)
-  src/components/{Pairing,IdentityChanged,Terminal,...}.tsx
+  src/lib/api.ts                    REST/WS client + server-base URL (same-origin or hosted)
+  src/components/{Pairing,IdentityChanged,ServerUrl,Terminal,...}.tsx
+.github/workflows/pages.yml         build + deploy the client to GitHub Pages
 scripts/
   build-exe.mjs   package the server as a single Windows .exe (Node SEA)
   fence-hook.mjs  Claude PreToolUse fence hook

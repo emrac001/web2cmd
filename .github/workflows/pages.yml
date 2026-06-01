@@ -1,0 +1,54 @@
+name: Deploy web client to GitHub Pages
+
+# Builds the web/ client and publishes it to GitHub Pages. The hosted app is a generic client:
+# each user points it at their own Web2cmd server URL (their tunnel/LAN) and pairs once — so no
+# one depends on any single tunnel for the app itself.
+#
+# Enable once in the repo: Settings → Pages → Build and deployment → Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deploy; don't cancel an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build web client (base = /<repo>/ for project Pages)
+        env:
+          WEB2CMD_BASE: /${{ github.event.repository.name }}/
+        run: pnpm --filter @web2cmd/web build
+      - name: SPA fallback (Pages serves 404.html for unknown paths)
+        run: cp web/dist/index.html web/dist/404.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

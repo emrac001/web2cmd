@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+*.tsbuildinfo
 .web2cmd/
 *.log
 .DS_Store

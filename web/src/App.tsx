@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   clearToken,
+  getServerBase,
   getToken,
+  setServerBase,
   type FenceDenial,
   type ServerConfig,
   type ServerInfo,
@@ -11,6 +13,7 @@ import {
 import { Login } from "./components/Login";
 import { Pairing } from "./components/Pairing";
 import { IdentityChanged } from "./components/IdentityChanged";
+import { ServerUrl } from "./components/ServerUrl";
 import { ProjectPicker } from "./components/ProjectPicker";
 import { Terminal, type TerminalHandle } from "./components/Terminal";
 import { TouchBar } from "./components/TouchBar";
@@ -30,6 +33,8 @@ export function App() {
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [authed, setAuthed] = useState(false);
   const [pinnedFp, setPinnedFp] = useState<string | null>(null); // set only on identity mismatch
+  const [needServer, setNeedServer] = useState(false); // hosted standalone, no reachable server
+  const [serverErr, setServerErr] = useState<string | null>(null);
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -62,27 +67,41 @@ export function App() {
     }
   }, [info]);
 
-  // Bootstrap: learn the server's auth mode + pinned identity before deciding what to show.
-  useEffect(() => {
-    api
-      .serverInfo()
-      .then((si) => {
-        setInfo(si);
-        const PIN_KEY = "web2cmd_server_fp";
-        const pinned = localStorage.getItem(PIN_KEY);
-        if (pinned && pinned !== si.identity.fingerprint) {
-          // Identity changed — block until the user consciously re-pairs (see IdentityChanged).
-          setPinnedFp(pinned);
-          return;
-        }
-        if (!pinned) localStorage.setItem(PIN_KEY, si.identity.fingerprint); // TOFU
-        // Open only when local + auth off. Remote always needs a (device) token; password mode
-        // needs a session/device token — in both cases we're authed only if we already hold one.
-        const open = si.authMode === "off" && si.exposure === "local";
-        setAuthed(open || Boolean(getToken()));
-      })
-      .catch(() => setInfo(null));
+  const applyInfo = useCallback((si: ServerInfo) => {
+    setInfo(si);
+    const PIN_KEY = "web2cmd_server_fp";
+    const pinned = localStorage.getItem(PIN_KEY);
+    if (pinned && pinned !== si.identity.fingerprint) {
+      // Identity changed — block until the user consciously re-pairs (see IdentityChanged).
+      setPinnedFp(pinned);
+      return;
+    }
+    if (!pinned) localStorage.setItem(PIN_KEY, si.identity.fingerprint); // TOFU
+    // Open only when local + auth off. Remote always needs a (device) token; password mode needs
+    // a session/device token — in both cases we're authed only if we already hold one.
+    const open = si.authMode === "off" && si.exposure === "local";
+    setAuthed(open || Boolean(getToken()));
   }, []);
+
+  // Bootstrap: reach the server (same origin when it serves the app, or a configured URL when the
+  // client is hosted standalone), then learn its auth mode + pinned identity.
+  const connect = useCallback(async () => {
+    setServerErr(null);
+    try {
+      const si = await api.serverInfo();
+      setNeedServer(false);
+      applyInfo(si);
+    } catch {
+      // No server reachable. If a URL is configured it's wrong/down; otherwise we're likely
+      // hosted standalone (e.g. Pages) and need the user to point us at their server.
+      if (getServerBase()) setServerErr("Couldn't reach that server — check the URL and that it's running.");
+      setNeedServer(true);
+    }
+  }, [applyInfo]);
+
+  useEffect(() => {
+    connect();
+  }, [connect]);
 
   useEffect(() => {
     if (!authed) return;
@@ -164,6 +183,17 @@ export function App() {
     setSessions([]);
   };
 
+  if (needServer)
+    return (
+      <ServerUrl
+        current={getServerBase()}
+        error={serverErr}
+        onSet={(url) => {
+          setServerBase(url);
+          connect();
+        }}
+      />
+    );
   if (!info)
     return (
       <div className="flex h-full items-center justify-center text-sm text-gray-500">
@@ -367,6 +397,23 @@ export function App() {
                   </div>
                 )}
               </div>
+
+              {/* Server URL (only when hosted standalone, i.e. a base URL is configured) */}
+              {getServerBase() && (
+                <div className="mb-3 rounded-lg border border-[var(--border)] p-2.5">
+                  <div className="mb-1 text-sm font-medium">🖥️ Server</div>
+                  <div className="mb-2 break-all text-xs text-gray-500">{getServerBase()}</div>
+                  <button
+                    onClick={() => {
+                      setDrawer(false);
+                      setNeedServer(true);
+                    }}
+                    className="w-full rounded-md border border-[var(--border)] px-2 py-2 text-xs text-gray-300"
+                  >
+                    Change server URL
+                  </button>
+                </div>
+              )}
 
               {/* Project fence */}
               {info?.fence === "on" && (

@@ -3,7 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon } from "@xterm/addon-clipboard";
-import { getToken } from "../lib/api";
+import { getToken, wsBase } from "../lib/api";
 import { LineEditor } from "../lib/lineEditor";
 
 export interface TerminalHandle {
@@ -32,9 +32,8 @@ interface Props {
 }
 
 function wsUrl(sessionId: string): string {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
   const token = getToken() ?? "";
-  return `${proto}://${location.host}/ws?token=${encodeURIComponent(token)}&session=${encodeURIComponent(
+  return `${wsBase()}/ws?token=${encodeURIComponent(token)}&session=${encodeURIComponent(
     sessionId,
   )}`;
 }
