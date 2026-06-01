@@ -27,11 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      # Node first (24): pnpm 11 needs Node >= 22.13 (it imports node:sqlite). Installing pnpm
+      # after Node — and without setup-node's pnpm cache — guarantees pnpm runs on Node 24.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: pnpm
+          node-version: 24
+      - uses: pnpm/action-setup@v4
       # Only the web package — avoids building the server's native node-pty (no Linux prebuild)
       # on the runner; the client build doesn't need it.
       - run: pnpm install --frozen-lockfile --filter @web2cmd/web
