@@ -86,12 +86,14 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.headers || {}),
     },
   });
+  const body = await res.json().catch(() => ({}));
   if (res.status === 401) {
     clearToken();
-    throw new ApiError(401, "unauthorized");
+    // Surface the server's actual reason (e.g. "invalid or expired pairing code") rather than a
+    // generic "unauthorized" — otherwise an expired code looks like a broken pairing flow.
+    throw new ApiError(401, (body as { error?: string }).error || "unauthorized");
   }
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, (body as any).error || res.statusText);
+  if (!res.ok) throw new ApiError(res.status, (body as { error?: string }).error || res.statusText);
   return body as T;
 }
 

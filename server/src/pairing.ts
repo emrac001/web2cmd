@@ -9,7 +9,7 @@
  */
 import { randomInt, timingSafeEqual } from "node:crypto";
 
-const TTL_MS = 10 * 60 * 1000; // codes are valid for 10 minutes
+const TTL_MS = 30 * 60 * 1000; // codes are valid for 30 minutes
 
 interface Otp {
   code: string;

@@ -57,9 +57,11 @@ export function App() {
       setSessions(ses.sessions);
       return ses.sessions;
     } catch {
-      // In password mode a 401 means our token died — drop back to login. With auth off there's
-      // no login to fall back to, so just surface empty and let the user retry.
-      if (info?.authMode !== "off") {
+      // A 401 means our token is missing/stale. Whenever the server actually requires one
+      // (remote ⇒ device token, or password mode ⇒ session token), drop back to the pairing/
+      // login screen so the user can re-authenticate. (Local + auth off needs no token.)
+      const needsToken = info?.exposure === "remote" || info?.authMode === "password";
+      if (needsToken) {
         clearToken();
         setAuthed(false);
       }
