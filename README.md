@@ -132,8 +132,9 @@ tunnel, and share the URL + pairing code. No terminal, no scripts.
 - **Cut a release:** push a tag (`git tag v0.2.0 && git push --tags`) — `.github/workflows/release.yml`
   builds the `.exe` on a Windows runner and attaches it to the GitHub Release.
 
-Currently produces a **win32-x64** binary. For a real release, **code-sign** it (`postject`
-invalidates the original Node signature).
+Currently produces a **win32-x64** binary. Releases are **code-signed via SignPath** (free for
+open source) when configured — see [docs/SIGNING.md](docs/SIGNING.md); until then they ship
+unsigned (Windows will warn about an unknown publisher).
 
 ---
 

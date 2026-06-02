@@ -1,7 +1,12 @@
 name: Release web2cmd.exe
 
-# Builds the single-file Windows executable and attaches it to a GitHub Release.
-# Triggers on a version tag (e.g. `git tag v0.2.0 && git push --tags`) or manual dispatch.
+# Builds the single-file Windows executable, signs it with SignPath (if configured), and attaches
+# it to a GitHub Release. Triggers on a version tag (`git tag v0.2.0 && git push --tags`) or
+# manual dispatch.
+#
+# Signing is OPTIONAL: until the SIGNPATH_API_TOKEN secret exists the release ships UNSIGNED (as
+# today). Once you finish SignPath setup (see docs/SIGNING.md) and add the secrets, releases are
+# signed automatically — no further changes here.
 
 on:
   push:
@@ -19,27 +24,52 @@ permissions:
 jobs:
   build-exe:
     runs-on: windows-latest
+    env:
+      # 'true' only when the signing secret is present, so the rest can branch on it.
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
-      # Node first (24): pnpm 11 needs Node >= 22.13.
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24 # pnpm 11 needs Node >= 22.13
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
       - name: Build web + server, then package the .exe
         run: |
           pnpm build
           node scripts/build-exe.mjs
+
+      # ---- sign with SignPath (only when configured) ----
+      - name: Upload unsigned artifact for SignPath
+        id: artifact
+        if: env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: web2cmd-exe-unsigned
+          path: build/exe/web2cmd.exe
+      - name: Submit to SignPath
+        if: env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: web2cmd
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
       - name: Publish to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          $notes = "Web2cmd $env:TAG - single-file Windows server. Download web2cmd.exe and double-click; the operator console opens in your browser."
+          if ($env:HAS_SIGNPATH -eq 'true') { $file = "signed/web2cmd.exe" } else { $file = "build/exe/web2cmd.exe" }
+          $signed = if ($env:HAS_SIGNPATH -eq 'true') { "signed" } else { "UNSIGNED" }
+          $notes = "Web2cmd $env:TAG ($signed) - single-file Windows server. Download web2cmd.exe and double-click; the operator console opens in your browser."
           gh release view "$env:TAG" 2>$null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload "$env:TAG" "build/exe/web2cmd.exe" --clobber
+            gh release upload "$env:TAG" "$file" --clobber
           } else {
-            gh release create "$env:TAG" "build/exe/web2cmd.exe" --title "$env:TAG" --notes "$notes"
+            gh release create "$env:TAG" "$file" --title "$env:TAG" --notes "$notes"
           }
