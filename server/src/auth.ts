@@ -22,6 +22,8 @@ export type TokenKind = "session" | "device";
 export interface TokenPayload {
   sub: "web2cmd-user";
   kind: TokenKind;
+  /** device-registry id for device tokens (absent on session tokens). */
+  deviceId?: string;
 }
 
 export function isPasswordConfigured(cfg: RuntimeConfig): boolean {
@@ -39,8 +41,8 @@ export function verifyPassword(cfg: RuntimeConfig, plain: string): boolean {
   return bcrypt.compareSync(plain, cfg.stored.passwordHash);
 }
 
-export function issueToken(cfg: RuntimeConfig, kind: TokenKind): string {
-  const payload: TokenPayload = { sub: "web2cmd-user", kind };
+export function issueToken(cfg: RuntimeConfig, kind: TokenKind, deviceId?: string): string {
+  const payload: TokenPayload = { sub: "web2cmd-user", kind, ...(deviceId ? { deviceId } : {}) };
   const ttl = kind === "device" ? cfg.deviceTokenTtl : cfg.tokenTtl;
   return jwt.sign(payload, cfg.stored.tokenSecret, { expiresIn: ttl as any });
 }
@@ -55,16 +57,27 @@ export function verifyToken(cfg: RuntimeConfig, token: string | undefined | null
   }
 }
 
-/** Decide whether a request bearing `token` may access the API/WS under the current config. */
-export function checkAccess(cfg: RuntimeConfig, token: string | undefined | null): boolean {
+/**
+ * Decide whether a request bearing `token` may access the API/WS under the current config.
+ * `deviceValid` checks the device registry (id known + not revoked) so the operator can revoke a
+ * paired client. Device tokens minted before the registry (no deviceId) are rejected — a clean
+ * forced re-pair.
+ */
+export function checkAccess(
+  cfg: RuntimeConfig,
+  token: string | undefined | null,
+  deviceValid: (id: string) => boolean,
+): boolean {
   const payload = verifyToken(cfg, token);
   if (cfg.exposure === "remote") {
-    // Remote access is gated by pairing — only a device token gets in.
-    return payload?.kind === "device";
+    // Remote access is gated by pairing — a device token whose id is still in the registry.
+    return payload?.kind === "device" && !!payload.deviceId && deviceValid(payload.deviceId);
   }
-  // Local: open when auth is off, otherwise any valid token (session or device).
+  // Local: open when auth is off, otherwise any valid token (and device tokens must be live).
   if (cfg.authMode === "off") return true;
-  return payload !== null;
+  if (!payload) return false;
+  if (payload.kind === "device") return !!payload.deviceId && deviceValid(payload.deviceId);
+  return true; // session token
 }
 
 /** Pull a bearer token from an Authorization header or a `token` query param. */

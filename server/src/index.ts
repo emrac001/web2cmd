@@ -26,6 +26,7 @@ import {
 import { ensureIdentity, fingerprint } from "./identity.js";
 import { currentOtp, rotateOtp, verifyOtp } from "./pairing.js";
 import { FenceManager, installClaudeHook, writeFenceScript } from "./fence.js";
+import { DeviceManager } from "./devices.js";
 import { timingSafeEqual } from "node:crypto";
 import { SessionManager } from "./sessions.js";
 import { browseDir, listProject, readProjectFile, writeProjectFile } from "./files.js";
@@ -46,6 +47,17 @@ const fenceSpawn = fence
 
 const sessions = new SessionManager(cfg.dataDir, fenceSpawn);
 const push = new PushManager(cfg);
+const devices = new DeviceManager(cfg.dataDir);
+
+// A request is from the operator (admin) only if it hit the loopback interface directly — NOT
+// proxied in through the tunnel (cloudflared runs on localhost too, but adds forwarding headers).
+function isAdminReq(req: { socket: { remoteAddress?: string }; headers: Record<string, unknown> }): boolean {
+  const ip = req.socket.remoteAddress || "";
+  const loopback = ip === "127.0.0.1" || ip === "::1" || ip.endsWith(":127.0.0.1");
+  const forwarded =
+    req.headers["x-forwarded-for"] || req.headers["cf-connecting-ip"] || req.headers["x-real-ip"];
+  return loopback && !forwarded;
+}
 
 // When a session looks like it's waiting for a confirmation, push to subscribed phones.
 sessions.setWaitingHandler((info, snippet) => {
@@ -99,6 +111,21 @@ const hasWebBuild = existsSync(join(webDist, "index.html"));
 
 const app = Fastify({ logger: false });
 
+// Tolerate empty bodies on application/json POSTs (no-body admin actions like regenerate-code /
+// revoke would otherwise fail with FST_ERR_CTP_EMPTY_JSON_BODY when a client sends the JSON type).
+app.addContentTypeParser(
+  "application/json",
+  { parseAs: "string" },
+  (_req, body: string, done) => {
+    if (!body) return done(null, {});
+    try {
+      done(null, JSON.parse(body));
+    } catch (e) {
+      done(e as Error);
+    }
+  },
+);
+
 // ---- CORS --------------------------------------------------------------------------------
 // Lets the client be hosted on a *different* origin (e.g. GitHub Pages) and still reach this
 // server over its tunnel/LAN URL. Auth is via Bearer token (not cookies), so reflecting the
@@ -132,8 +159,9 @@ app.addHook("onRequest", async (req, reply) => {
   if (!req.url.startsWith("/api/")) return; // static assets are public
   const path = req.url.split("?")[0];
   if (PUBLIC_PATHS.has(path)) return;
+  if (path.startsWith("/api/admin/")) return; // admin routes self-gate to localhost (isAdminReq)
   const token = extractToken(req.headers.authorization, undefined);
-  if (!checkAccess(cfg, token)) {
+  if (!checkAccess(cfg, token, (id) => devices.isValid(id))) {
     reply.code(401).send({ error: "unauthorized" });
   }
 });
@@ -160,20 +188,30 @@ app.post<{ Body: { password?: string } }>("/api/login", async (req, reply) => {
   return { token: issueToken(cfg, "session") };
 });
 
-// Device pairing: exchange a valid OTP (+ the password, when auth=password) for a device token.
-app.post<{ Body: { otp?: string; password?: string } }>("/api/pair", async (req, reply) => {
-  const { otp, password } = req.body ?? {};
-  if (!otp || !verifyOtp(otp)) {
-    return reply.code(401).send({ error: "invalid or expired pairing code" });
-  }
-  if (cfg.authMode === "password" && !(password && verifyPassword(cfg, password))) {
-    return reply.code(401).send({ error: "password required" });
-  }
-  // Single-use: burn the code now and surface a fresh one on the server console.
-  rotateOtp();
-  printPairingCode();
-  return { token: issueToken(cfg, "device") };
-});
+// Device pairing: exchange a valid OTP (+ the password, when auth=password) for a device token
+// bound to a new registry record (so the operator can later list/revoke/cap it).
+app.post<{ Body: { otp?: string; password?: string; displayName?: string } }>(
+  "/api/pair",
+  async (req, reply) => {
+    const { otp, password, displayName } = req.body ?? {};
+    if (!otp || !verifyOtp(otp)) {
+      return reply.code(401).send({ error: "invalid or expired pairing code" });
+    }
+    if (cfg.authMode === "password" && !(password && verifyPassword(cfg, password))) {
+      return reply.code(401).send({ error: "password required" });
+    }
+    let device;
+    try {
+      device = devices.create(displayName);
+    } catch {
+      return reply.code(403).send({ error: "device limit reached — ask the operator to free a slot" });
+    }
+    // Single-use: burn the code now and surface a fresh one on the server console.
+    rotateOtp();
+    printPairingCode();
+    return { token: issueToken(cfg, "device", device.id), deviceId: device.id };
+  },
+);
 
 app.get("/api/config", async () => ({
   defaultCwd: cfg.defaultCwd,
@@ -326,6 +364,51 @@ app.post<{ Body: { root?: string } }>("/api/fence/install-claude-hook", async (r
   }
 });
 
+// ---- admin (operator) ------------------------------------------------------------------
+// Reachable only from the loopback interface (the operator at the machine), NOT through the
+// tunnel. The auth gate skips /api/admin/*; each handler enforces isAdminReq. Phase B builds the
+// full operator console on top of these.
+function requireAdmin(req: any, reply: any): boolean {
+  if (!isAdminReq(req)) {
+    reply.code(403).send({ error: "admin only — available on the server machine (localhost)" });
+    return false;
+  }
+  return true;
+}
+
+app.get("/api/admin/devices", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  return { devices: devices.list(), maxDevices: devices.getMax(), active: devices.activeCount() };
+});
+
+app.post<{ Params: { id: string } }>("/api/admin/devices/:id/revoke", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  return { revoked: devices.revoke(req.params.id) };
+});
+
+app.post<{ Body: { max?: number } }>("/api/admin/max-devices", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const n = Number(req.body?.max);
+  if (!Number.isFinite(n) || n < 0) return reply.code(400).send({ error: "max must be >= 0 (0 = unlimited)" });
+  devices.setMax(n);
+  return { maxDevices: devices.getMax() };
+});
+
+// Mint a fresh pairing code on demand (e.g. when the old one expired) — the operator reads it off
+// the response (and it's also printed to the console).
+app.post("/api/admin/regenerate-code", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  rotateOtp();
+  printPairingCode();
+  return { code: currentOtp().code, expiresInMs: currentOtp().expiresInMs };
+});
+
+app.get("/api/admin/code", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const { code, expiresInMs } = currentOtp();
+  return { code, expiresInMs };
+});
+
 // ---- static web app (SPA) -------------------------------------------------------------
 // Registered inside start() (before app.ready()) so this module has no top-level await — which
 // keeps it bundleable into the CJS single-file .exe.
@@ -402,7 +485,7 @@ async function start() {
       return;
     }
     const token = url.searchParams.get("token");
-    if (!checkAccess(cfg, token)) {
+    if (!checkAccess(cfg, token, (id) => devices.isValid(id))) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
