@@ -61,7 +61,39 @@ export interface ServerInfo {
   authMode: "off" | "password";
   exposure: "local" | "remote";
   fence: "on" | "off";
+  /** "admin" when this client reached the server on localhost (the operator); else "client". */
+  role: "admin" | "client";
   identity: { publicKey: string; fingerprint: string };
+}
+
+export type TunnelProviderName = "cloudflared" | "ngrok";
+export interface TunnelStatus {
+  running: boolean;
+  provider: TunnelProviderName | null;
+  url: string | null;
+  startedAt: number | null;
+}
+export interface TunnelProviderInfo {
+  provider: TunnelProviderName;
+  available: boolean;
+  install: string;
+}
+export interface AdminDevice {
+  id: string;
+  displayName: string | null;
+  createdAt: number;
+  lastSeen: number;
+  revoked: boolean;
+}
+export interface AdminStatus {
+  authMode: "off" | "password";
+  exposure: "local" | "remote";
+  fence: boolean;
+  root: string;
+  identity: string;
+  tunnel: TunnelStatus;
+  pairCode: { code: string; expiresInMs: number };
+  devices: { active: number; max: number };
 }
 
 export interface FenceDenial {
@@ -157,6 +189,32 @@ export const api = {
       "/api/fence/install-claude-hook",
       { method: "POST", body: JSON.stringify({ root }) },
     ),
+
+  // ---- operator console (localhost-only on the server side) ----
+  adminStatus: () => req<AdminStatus>("/api/admin/status"),
+  adminTunnels: () =>
+    req<{ providers: TunnelProviderInfo[]; current: TunnelStatus }>("/api/admin/tunnels"),
+  startTunnel: (provider: TunnelProviderName) =>
+    req<TunnelStatus & { pairCode?: string }>("/api/admin/tunnel/start", {
+      method: "POST",
+      body: JSON.stringify({ provider }),
+    }),
+  stopTunnel: () => req<TunnelStatus>("/api/admin/tunnel/stop", { method: "POST" }),
+  setRoot: (path: string) =>
+    req<{ root: string }>("/api/admin/root", { method: "POST", body: JSON.stringify({ path }) }),
+  setFence: (on: boolean) =>
+    req<{ fence: boolean }>("/api/admin/fence", { method: "POST", body: JSON.stringify({ on }) }),
+  regenerateCode: () =>
+    req<{ code: string; expiresInMs: number }>("/api/admin/regenerate-code", { method: "POST" }),
+  adminDevices: () =>
+    req<{ devices: AdminDevice[]; maxDevices: number; active: number }>("/api/admin/devices"),
+  revokeDevice: (id: string) =>
+    req<{ revoked: boolean }>(`/api/admin/devices/${id}/revoke`, { method: "POST" }),
+  setMaxDevices: (max: number) =>
+    req<{ maxDevices: number }>("/api/admin/max-devices", {
+      method: "POST",
+      body: JSON.stringify({ max }),
+    }),
 
   pushKey: () => req<{ publicKey: string }>("/api/push/key"),
   pushSubscribe: (subscription: PushSubscriptionJSON) =>

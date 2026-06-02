@@ -14,6 +14,7 @@ import { Login } from "./components/Login";
 import { Pairing } from "./components/Pairing";
 import { IdentityChanged } from "./components/IdentityChanged";
 import { ServerUrl } from "./components/ServerUrl";
+import { OperatorConsole } from "./components/OperatorConsole";
 import { ProjectPicker } from "./components/ProjectPicker";
 import { Terminal, type TerminalHandle } from "./components/Terminal";
 import { TouchBar } from "./components/TouchBar";
@@ -202,6 +203,8 @@ export function App() {
         Connecting…
       </div>
     );
+  // The operator (reached the server on localhost) gets the control panel, not the terminal.
+  if (info.role === "admin") return <OperatorConsole />;
   if (pinnedFp)
     return (
       <IdentityChanged
