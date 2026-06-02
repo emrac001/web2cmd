@@ -1,0 +1,142 @@
+/**
+ * Server-managed tunnels.
+ *
+ * Lets the operator start/stop a public tunnel from the Console instead of a separate script:
+ * the server spawns cloudflared/ngrok as a child, reads back the public URL, and tracks state.
+ * It also reports which tunnel tools are installed (so the Console can offer a picker) and gives
+ * install guidance when none are present.
+ */
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+
+export type TunnelProvider = "cloudflared" | "ngrok";
+
+export interface TunnelStatus {
+  running: boolean;
+  provider: TunnelProvider | null;
+  url: string | null;
+  startedAt: number | null;
+}
+
+const INSTALL_HINTS: Record<TunnelProvider, string> = {
+  cloudflared:
+    "Install cloudflared: `winget install --id Cloudflare.cloudflared` (or github.com/cloudflare/cloudflared/releases). No account needed for quick tunnels.",
+  ngrok:
+    "Install ngrok: `winget install --id Ngrok.Ngrok` (or ngrok.com/download), then `ngrok config add-authtoken <token>`.",
+};
+
+export class TunnelManager {
+  private child: ChildProcess | null = null;
+  private status: TunnelStatus = { running: false, provider: null, url: null, startedAt: null };
+
+  constructor(private port: number) {}
+
+  /** Is a provider's binary on PATH? */
+  available(provider: TunnelProvider): boolean {
+    try {
+      const r = spawnSync(provider, ["--version"], { timeout: 5000, stdio: "ignore" });
+      return !r.error;
+    } catch {
+      return false;
+    }
+  }
+
+  /** All known providers with availability + install hints (for the Console picker). */
+  discover(): Array<{ provider: TunnelProvider; available: boolean; install: string }> {
+    return (["cloudflared", "ngrok"] as TunnelProvider[]).map((p) => ({
+      provider: p,
+      available: this.available(p),
+      install: INSTALL_HINTS[p],
+    }));
+  }
+
+  getStatus(): TunnelStatus {
+    return { ...this.status };
+  }
+
+  /** Start a tunnel and resolve once its public URL is known. Replaces any running tunnel. */
+  async start(provider: TunnelProvider): Promise<TunnelStatus> {
+    await this.stop();
+    if (!this.available(provider)) {
+      throw new Error(`${provider} is not installed. ${INSTALL_HINTS[provider]}`);
+    }
+    const url = provider === "cloudflared" ? await this.startCloudflared() : await this.startNgrok();
+    this.status = { running: true, provider, url, startedAt: Date.now() };
+    return this.getStatus();
+  }
+
+  private startCloudflared(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${this.port}`], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      this.child = child;
+      let buf = "";
+      const onData = (d: Buffer) => {
+        buf += d.toString();
+        const m = buf.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+        if (m) {
+          cleanup();
+          resolve(m[0]);
+        }
+      };
+      const onExit = () => {
+        cleanup();
+        reject(new Error("cloudflared exited before a URL appeared"));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("timed out waiting for the cloudflared URL"));
+      }, 30000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        child.stdout?.off("data", onData);
+        child.stderr?.off("data", onData);
+        child.off("exit", onExit);
+      };
+      child.stdout?.on("data", onData);
+      child.stderr?.on("data", onData);
+      child.on("exit", onExit);
+    });
+  }
+
+  private startNgrok(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn("ngrok", ["http", String(this.port), "--log", "stdout"], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      this.child = child;
+      let tries = 0;
+      const poll = setInterval(async () => {
+        if (++tries > 40) {
+          clearInterval(poll);
+          reject(new Error("timed out waiting for the ngrok URL"));
+          return;
+        }
+        try {
+          const res = await fetch("http://127.0.0.1:4040/api/tunnels");
+          const j = (await res.json()) as { tunnels?: Array<{ public_url?: string }> };
+          const https = (j.tunnels ?? []).find((t) => t.public_url?.startsWith("https"));
+          if (https?.public_url) {
+            clearInterval(poll);
+            resolve(https.public_url);
+          }
+        } catch {
+          /* ngrok API not up yet */
+        }
+      }, 500);
+      child.on("exit", () => clearInterval(poll));
+    });
+  }
+
+  async stop(): Promise<void> {
+    if (this.child) {
+      try {
+        this.child.kill();
+      } catch {
+        /* already gone */
+      }
+      this.child = null;
+    }
+    this.status = { running: false, provider: null, url: null, startedAt: null };
+  }
+}

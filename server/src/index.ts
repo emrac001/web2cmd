@@ -27,6 +27,7 @@ import { ensureIdentity, fingerprint } from "./identity.js";
 import { currentOtp, rotateOtp, verifyOtp } from "./pairing.js";
 import { FenceManager, installClaudeHook, writeFenceScript } from "./fence.js";
 import { DeviceManager } from "./devices.js";
+import { TunnelManager, type TunnelProvider } from "./tunnel.js";
 import { timingSafeEqual } from "node:crypto";
 import { SessionManager } from "./sessions.js";
 import { browseDir, listProject, readProjectFile, writeProjectFile } from "./files.js";
@@ -35,19 +36,27 @@ import { PushManager } from "./push.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cfg = loadConfig();
 
-// Project fence: the authoritative checker + the generated PowerShell guard script handed to
-// each shell. The Claude hook lives at <repo>/scripts/fence-hook.mjs.
-const fence = cfg.fence === "on" ? new FenceManager(cfg.dataDir) : null;
+// Project fence: always initialized (checker + generated PowerShell guard script + Claude hook
+// path) so it can be toggled at runtime; `fenceEnabled` controls whether new sessions use it.
+const fence = new FenceManager(cfg.dataDir);
 const fenceHookScript = process.env.WEB2CMD_FENCE_HOOK
   ? resolve(process.env.WEB2CMD_FENCE_HOOK)
   : join(repoRoot, "scripts", "fence-hook.mjs");
-const fenceSpawn = fence
-  ? { scriptPath: writeFenceScript(cfg.dataDir), secret: fence.secret, url: `http://127.0.0.1:${cfg.port}` }
-  : null;
+const fenceSpawn = {
+  scriptPath: writeFenceScript(cfg.dataDir),
+  secret: fence.secret,
+  url: `http://127.0.0.1:${cfg.port}`,
+};
+let fenceEnabled = cfg.fence === "on";
 
-const sessions = new SessionManager(cfg.dataDir, fenceSpawn);
+const sessions = new SessionManager(cfg.dataDir, fenceEnabled ? fenceSpawn : null);
 const push = new PushManager(cfg);
 const devices = new DeviceManager(cfg.dataDir);
+const tunnel = new TunnelManager(cfg.port);
+
+// Exposure is dynamic: while a server-managed tunnel is running the server is "remote" (so pairing
+// is required), otherwise it falls back to the static mode it booted with.
+const staticExposure = cfg.exposure;
 
 // A request is from the operator (admin) only if it hit the loopback interface directly — NOT
 // proxied in through the tunnel (cloudflared runs on localhost too, but adds forwarding headers).
@@ -170,10 +179,12 @@ app.addHook("onRequest", async (req, reply) => {
 app.get("/api/health", async () => ({ ok: true }));
 
 // Public bootstrap: lets the client learn whether to log in and pin the server's identity.
-app.get("/api/server-info", async () => ({
+app.get("/api/server-info", async (req) => ({
   authMode: cfg.authMode,
   exposure: cfg.exposure,
-  fence: cfg.fence,
+  fence: fenceEnabled ? "on" : "off",
+  // Which face to show: the operator (localhost, not via the tunnel) is the admin.
+  role: isAdminReq(req) ? "admin" : "client",
   identity: { publicKey: identity.publicKey, fingerprint: identityFp },
 }));
 
@@ -332,7 +343,7 @@ function secretOk(provided: unknown): boolean {
 app.post<{ Body: { root?: string; target?: string; secret?: string } }>(
   "/api/fence/check",
   async (req, reply) => {
-    if (!fence) return { allowed: true, reason: "fence-off" };
+    if (!fenceEnabled) return { allowed: true, reason: "fence-off" };
     const { root, target, secret } = req.body ?? {};
     if (!secretOk(secret)) return reply.code(403).send({ error: "bad fence secret" });
     if (!root || !target) return reply.code(400).send({ error: "root and target required" });
@@ -407,6 +418,69 @@ app.get("/api/admin/code", async (req, reply) => {
   if (!requireAdmin(req, reply)) return;
   const { code, expiresInMs } = currentOtp();
   return { code, expiresInMs };
+});
+
+// One-shot snapshot for the operator Console.
+app.get("/api/admin/status", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const { code, expiresInMs } = currentOtp();
+  return {
+    authMode: cfg.authMode,
+    exposure: cfg.exposure,
+    fence: fenceEnabled,
+    root: cfg.defaultCwd,
+    identity: identityFp,
+    tunnel: tunnel.getStatus(),
+    pairCode: { code, expiresInMs },
+    devices: { active: devices.activeCount(), max: devices.getMax() },
+  };
+});
+
+// Which tunnel tools are installed (for the Console picker + install guidance).
+app.get("/api/admin/tunnels", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  return { providers: tunnel.discover(), current: tunnel.getStatus() };
+});
+
+app.post<{ Body: { provider?: TunnelProvider } }>("/api/admin/tunnel/start", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const provider = req.body?.provider;
+  if (provider !== "cloudflared" && provider !== "ngrok") {
+    return reply.code(400).send({ error: "provider must be 'cloudflared' or 'ngrok'" });
+  }
+  try {
+    const status = await tunnel.start(provider);
+    cfg.exposure = "remote"; // a public tunnel is up ⇒ require pairing
+    rotateOtp();
+    printPairingCode();
+    return { ...status, pairCode: currentOtp().code };
+  } catch (e) {
+    return reply.code(400).send({ error: String((e as Error).message) });
+  }
+});
+
+app.post("/api/admin/tunnel/stop", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  await tunnel.stop();
+  cfg.exposure = staticExposure; // back to how it booted
+  return tunnel.getStatus();
+});
+
+// Set the folder the project picker opens at (the "client root").
+app.post<{ Body: { path?: string } }>("/api/admin/root", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const path = req.body?.path;
+  if (!path || !existsSync(path)) return reply.code(400).send({ error: "path does not exist" });
+  cfg.defaultCwd = resolve(path);
+  return { root: cfg.defaultCwd };
+});
+
+// Toggle the project fence for sessions created from now on.
+app.post<{ Body: { on?: boolean } }>("/api/admin/fence", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  fenceEnabled = Boolean(req.body?.on);
+  sessions.setFence(fenceEnabled ? fenceSpawn : null);
+  return { fence: fenceEnabled };
 });
 
 // ---- static web app (SPA) -------------------------------------------------------------
@@ -517,6 +591,7 @@ async function start() {
 }
 
 process.on("SIGINT", () => {
+  void tunnel.stop();
   sessions.killAll();
   process.exit(0);
 });

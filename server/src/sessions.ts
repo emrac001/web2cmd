@@ -313,6 +313,11 @@ export class SessionManager {
     this.waitingHandler = fn;
   }
 
+  /** Enable/disable the fence for sessions created from now on (runtime toggle). */
+  setFence(fence: FenceSpawn | null) {
+    this.fence = fence;
+  }
+
   create(opts: CreateOptions): SessionInfo {
     const s = new Session(opts, this.dataDir, this.fence, (snippet) => {
       this.waitingHandler?.(s.info(), snippet);
