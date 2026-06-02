@@ -106,6 +106,7 @@ export interface AdminStatus {
   tunnel: TunnelStatus;
   pairCode: { code: string; expiresInMs: number };
   devices: { active: number; max: number };
+  hasPassword: boolean;
 }
 
 export interface FenceDenial {
@@ -231,6 +232,13 @@ export const api = {
   adminSessions: () => req<{ sessions: AdminSession[] }>("/api/admin/sessions"),
   releaseControl: (id: string) =>
     req<{ released: boolean }>(`/api/admin/sessions/${id}/release`, { method: "POST" }),
+  setPassword: (password: string | null) =>
+    req<{ hasPassword: boolean; authMode: string }>("/api/admin/password", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  setAuthMode: (mode: "off" | "password") =>
+    req<{ authMode: string }>("/api/admin/auth", { method: "POST", body: JSON.stringify({ mode }) }),
   setMaxDevices: (max: number) =>
     req<{ maxDevices: number }>("/api/admin/max-devices", {
       method: "POST",

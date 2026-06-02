@@ -18,6 +18,7 @@ import { URL } from "node:url";
 import { loadConfig, repoRoot } from "./config.js";
 import {
   checkAccess,
+  clearPassword,
   extractToken,
   isPasswordConfigured,
   issueToken,
@@ -443,7 +444,35 @@ app.get("/api/admin/status", async (req, reply) => {
     tunnel: tunnel.getStatus(),
     pairCode: { code, expiresInMs },
     devices: { active: devices.activeCount(), max: devices.getMax() },
+    hasPassword: isPasswordConfigured(cfg),
   };
+});
+
+// Admin-only: set or clear the login password.
+app.post<{ Body: { password?: string | null } }>("/api/admin/password", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const pw = req.body?.password;
+  if (pw) {
+    setPassword(cfg, pw);
+  } else {
+    clearPassword(cfg);
+    if (cfg.authMode === "password") cfg.authMode = "off"; // can't gate without a password
+  }
+  return { hasPassword: isPasswordConfigured(cfg), authMode: cfg.authMode };
+});
+
+// Admin-only: turn the password gate on/off at runtime.
+app.post<{ Body: { mode?: "off" | "password" } }>("/api/admin/auth", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const mode = req.body?.mode;
+  if (mode !== "off" && mode !== "password") {
+    return reply.code(400).send({ error: "mode must be 'off' or 'password'" });
+  }
+  if (mode === "password" && !isPasswordConfigured(cfg)) {
+    return reply.code(400).send({ error: "set a password first" });
+  }
+  cfg.authMode = mode;
+  return { authMode: cfg.authMode };
 });
 
 // Which tunnel tools are installed (for the Console picker + install guidance).

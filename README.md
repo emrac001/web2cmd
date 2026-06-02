@@ -171,10 +171,13 @@ with your privileges, and no OS-level sandbox** (a deliberate choice). The layer
 
 | Layer | Protects | Strength |
 | ----- | -------- | -------- |
-| **Access** — auth (optional) + **OTP pairing** for remote + **server-identity pinning** | who can connect at all | **This is the real perimeter.** Treat the pairing code + your password like keys. |
+| **Access** — OTP **pairing** for remote (operator-gated: clients are registered, **revocable**, and **capped**), optional **password**, + **server-identity pinning** | who can connect at all | **This is the real perimeter.** Treat the pairing code + password like keys. The operator can revoke any client instantly. |
+| **Typing lock** — single active typist per session | two clients clobbering one shell | **Enforced** — the server only writes the lock-holder's input to the PTY; others are read-only until the holder releases or the operator hands control over. |
 | **FS API fence** (`resolveInRoot`) | the web file browser/editor staying in the project root | **Hard** — the client genuinely cannot escape the root. |
 | **Claude PreToolUse hook** | Claude's structured file tools + `cd` staying in root | **Medium** — covers normal tool use; does not parse arbitrary shell redirection. |
 | **Shell `cd` guard** | accidental drift out of the project in the interactive shell | **Nudge only.** |
+
+The **Operator Console** (admin controls — start/stop tunnel, set root, fence, password/auth, revoke clients) is only served to **localhost** (the person at the machine); requests arriving through the tunnel are always treated as untrusted clients.
 
 **The shell `cd` guard is not a boundary.** It only overrides the `cd`/`Set-Location`/`pushd`
 aliases. A user can trivially escape it — calling the cmdlet by its module-qualified name,
@@ -204,6 +207,10 @@ proxy (e.g. Cloudflare Access) in front of it.
 | `WEB2CMD_TOKEN_TTL`   | `30d`                   | password-login (session) token lifetime                    |
 | `WEB2CMD_DEVICE_TTL`  | `365d`                  | paired-device token lifetime                               |
 | `WEB2CMD_DEFAULT_CWD` | repo root               | folder the project picker opens at                         |
+| `WEB2CMD_NO_OPEN`     | —                       | set to `1` to stop the `.exe` auto-opening the browser     |
+
+Most of these (auth/password, fence, tunnel, project root, device cap) can also be changed at
+runtime from the **Operator Console** (open `http://localhost:8787` on the server machine).
 
 ## Development
 

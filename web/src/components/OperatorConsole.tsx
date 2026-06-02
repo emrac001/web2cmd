@@ -55,6 +55,7 @@ export function OperatorConsole() {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
+  const [pw, setPw] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -182,6 +183,41 @@ export function OperatorConsole() {
             <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-400">{status.identity}</span>
             <Copy value={status.identity} />
           </div>
+        </div>
+
+        {/* Security: optional password layer on top of pairing */}
+        <div className={card}>
+          <div className="mb-2 text-sm font-medium">Security</div>
+          <label className="mb-2 flex items-center justify-between">
+            <span className="text-sm">Require password {status.authMode === "password" ? "(on)" : "(off)"}</span>
+            <button
+              disabled={busy === "auth" || (status.authMode !== "password" && !status.hasPassword)}
+              onClick={() => run("auth", () => api.setAuthMode(status.authMode === "password" ? "off" : "password"))}
+              className={
+                "relative h-6 w-11 rounded-full transition disabled:opacity-40 " +
+                (status.authMode === "password" ? "bg-[var(--accent)]" : "bg-[#1a2030] border border-[var(--border)]")
+              }
+            >
+              <span className={"absolute top-0.5 h-5 w-5 rounded-full bg-white transition " + (status.authMode === "password" ? "left-5" : "left-0.5")} />
+            </button>
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              placeholder={status.hasPassword ? "Change password" : "Set a password"}
+              className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[#0b0e14] px-2 py-1.5 text-sm outline-none"
+            />
+            <button disabled={!pw || busy === "pw"} onClick={() => run("pw", async () => { await api.setPassword(pw); setPw(""); })} className={btn}>Set</button>
+            {status.hasPassword && (
+              <button disabled={busy === "pwc"} onClick={() => run("pwc", () => api.setPassword(null))} className={btn}>Clear</button>
+            )}
+          </div>
+          <p className="mt-1 text-[11px] text-gray-500">
+            {status.hasPassword ? "Password is set." : "No password — pairing alone gates remote access."}
+            {status.authMode === "password" ? " Clients must also enter it when pairing." : ""}
+          </p>
         </div>
 
         {/* Project root + fence */}

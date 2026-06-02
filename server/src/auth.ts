@@ -36,6 +36,12 @@ export function setPassword(cfg: RuntimeConfig, plain: string): void {
   saveStored(cfg.dataDir, cfg.stored);
 }
 
+/** Remove the login password. */
+export function clearPassword(cfg: RuntimeConfig): void {
+  cfg.stored.passwordHash = null;
+  saveStored(cfg.dataDir, cfg.stored);
+}
+
 export function verifyPassword(cfg: RuntimeConfig, plain: string): boolean {
   if (!cfg.stored.passwordHash) return false;
   return bcrypt.compareSync(plain, cfg.stored.passwordHash);
