@@ -18,6 +18,7 @@
  *   node scripts/build-exe.mjs --stage-only # bundle + stage + manifest only (no SEA)
  */
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -105,8 +106,14 @@ function walk(dir) {
   }
   return files;
 }
-const version = JSON.parse(readFileSync(p(root, "server", "package.json"), "utf8")).version;
-const stagedFiles = walk(stage).map((f) => relative(stage, f).split("\\").join("/"));
+const pkgVersion = JSON.parse(readFileSync(p(root, "server", "package.json"), "utf8")).version;
+// Key the runtime-extraction dir on the payload's CONTENT, so a build with a changed web/native
+// payload extracts fresh instead of reusing a stale copy (the bootstrap dir is per-version).
+const stagedAbs = walk(stage);
+const payloadHash = createHash("sha256");
+for (const f of stagedAbs) payloadHash.update(readFileSync(f));
+const version = `${pkgVersion}-${payloadHash.digest("hex").slice(0, 10)}`;
+const stagedFiles = stagedAbs.map((f) => relative(stage, f).split("\\").join("/"));
 const manifest = { version, files: stagedFiles };
 const manifestPath = p(out, "manifest.json");
 writeFileSync(manifestPath, JSON.stringify(manifest));
