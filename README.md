@@ -8,6 +8,24 @@ laptop and your phone simultaneously.
 Built for one specific pain: Claude pauses for a confirmation while you're away from the
 laptop, and the work stalls. With Web2cmd you confirm from your phone and keep moving.
 
+## Screenshots
+
+| Operator Console (on the laptop) | Driving Claude from a phone |
+| :---: | :---: |
+| ![Web2cmd Operator Console](docs/screenshot-console.png) | ![Web2cmd phone client driving Claude Code](docs/screenshot-client.png) |
+
+<!-- Drop two images here: docs/screenshot-console.png (the localhost Operator Console) and
+     docs/screenshot-client.png (a phone running the client / driving Claude). They render above. -->
+
+## What you get
+
+- 📱 **Drive Claude Code from your phone** — answer its confirmation prompts from anywhere.
+- 🖥️ **One-click server** — a single `web2cmd.exe`; double-click and the Operator Console opens.
+- 🔗 **Pair once** — short code + pinned server identity; the tunnel URL can change freely.
+- 👥 **Multiple clients, one shared shell** — with a single-typist lock so nobody clobbers anyone.
+- 🔔 **Push notifications** the moment Claude is waiting — even with the screen locked.
+- 🧰 **Operator console** to start/stop the tunnel, pick the project, cap & revoke clients.
+
 > ⚠️ **Read this first.** Web2cmd hands whoever can reach it **command execution on your laptop,
 > as your user**. Run unauthenticated **only on localhost/LAN**. The moment you expose it
 > (a tunnel), a device must **pair** before it can connect, and your client **pins the server's
@@ -68,8 +86,8 @@ cloudflared/ngrok tunnel).
 When exposed remotely, Web2cmd **requires pairing** — an open terminal is never served over a
 tunnel:
 
-1. The server console prints a **6-digit pairing code** (valid ~10 min; press Enter in the
-   server window for a fresh one).
+1. The server console prints a **6-digit pairing code** (valid ~30 min). The Operator Console has a
+   **New code** button, or press Enter in the server window, for a fresh one.
 2. Open the tunnel URL on your phone → enter the code on the **Pair this device** screen.
 3. The phone receives a long-lived **device token** and **pins the server's identity
    fingerprint** (shown on the pairing screen — confirm it matches the `identity:` line in the
@@ -137,6 +155,19 @@ open source) when configured — see [docs/SIGNING.md](docs/SIGNING.md); until t
 unsigned (Windows will warn about an unknown publisher).
 
 ---
+
+## Operator Console
+
+Open the server on **localhost** (`http://localhost:8787`, or just run the `.exe`) and you get the
+**Operator Console** instead of a terminal — the admin surface, served only to the person at the
+machine (anything arriving through the tunnel is always treated as a client). From it you can:
+
+- **Start/Stop a tunnel** — it detects installed tools (cloudflared/ngrok) or guides you to install one.
+- **Pick the project root** and toggle the **project fence**.
+- See the live **URL + pairing code** (with a **New code** button) and the server **identity** to read out.
+- **Manage clients** — see who's connected, set a **max** (channels), and **revoke** any device instantly.
+- Optionally set a **password** and require it on top of pairing.
+- **Release control** of a session's typing lock to hand the keyboard to another client.
 
 ## Push notifications ("Claude is waiting")
 
