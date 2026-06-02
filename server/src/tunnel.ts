@@ -7,6 +7,8 @@
  * install guidance when none are present.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export type TunnelProvider = "cloudflared" | "ngrok";
 
@@ -30,14 +32,46 @@ export class TunnelManager {
 
   constructor(private port: number) {}
 
-  /** Is a provider's binary on PATH? */
-  available(provider: TunnelProvider): boolean {
-    try {
-      const r = spawnSync(provider, ["--version"], { timeout: 5000, stdio: "ignore" });
-      return !r.error;
-    } catch {
-      return false;
+  /** Likely install locations, used when PATH resolution misses the binary (detached process,
+   *  reduced PATH, ngrok installed under %LOCALAPPDATA%, winget shims, Homebrew, etc.). */
+  private candidatePaths(provider: TunnelProvider): string[] {
+    if (process.platform === "win32") {
+      const exe = `${provider}.exe`;
+      const pf = process.env.ProgramFiles || "C:\\Program Files";
+      const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+      const lad = process.env.LOCALAPPDATA || "";
+      const dirs =
+        provider === "cloudflared"
+          ? [join(pf86, "cloudflared"), join(pf, "cloudflared")]
+          : [join(lad, "ngrok"), join(pf, "ngrok")];
+      if (lad) dirs.push(join(lad, "Microsoft", "WinGet", "Links"));
+      return dirs.map((d) => join(d, exe));
     }
+    return ["/usr/local/bin", "/usr/bin", "/opt/homebrew/bin", "/snap/bin"].map((d) =>
+      join(d, provider),
+    );
+  }
+
+  /** Resolve the absolute path to a provider's binary, or null. Tries PATH (where/which) first,
+   *  then known install locations. Not cached, so a tool installed after boot is still found. */
+  private resolveBinary(provider: TunnelProvider): string | null {
+    try {
+      const which = process.platform === "win32" ? "where" : "which";
+      const r = spawnSync(which, [provider], { timeout: 5000, windowsHide: true, encoding: "utf8" });
+      const hit = (r.stdout || "")
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .find((s) => s && existsSync(s));
+      if (hit) return hit;
+    } catch {
+      /* fall through to known locations */
+    }
+    return this.candidatePaths(provider).find((p) => existsSync(p)) ?? null;
+  }
+
+  /** Whether a provider's binary can be found (on PATH or in a known install location). */
+  available(provider: TunnelProvider): boolean {
+    return this.resolveBinary(provider) !== null;
   }
 
   /** All known providers with availability + install hints (for the Console picker). */
@@ -56,18 +90,19 @@ export class TunnelManager {
   /** Start a tunnel and resolve once its public URL is known. Replaces any running tunnel. */
   async start(provider: TunnelProvider): Promise<TunnelStatus> {
     await this.stop();
-    if (!this.available(provider)) {
-      throw new Error(`${provider} is not installed. ${INSTALL_HINTS[provider]}`);
-    }
-    const url = provider === "cloudflared" ? await this.startCloudflared() : await this.startNgrok();
+    const bin = this.resolveBinary(provider);
+    if (!bin) throw new Error(`${provider} is not installed. ${INSTALL_HINTS[provider]}`);
+    const url =
+      provider === "cloudflared" ? await this.startCloudflared(bin) : await this.startNgrok(bin);
     this.status = { running: true, provider, url, startedAt: Date.now() };
     return this.getStatus();
   }
 
-  private startCloudflared(): Promise<string> {
+  private startCloudflared(bin: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const child = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${this.port}`], {
+      const child = spawn(bin, ["tunnel", "--url", `http://localhost:${this.port}`], {
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
       });
       this.child = child;
       let buf = "";
@@ -99,10 +134,11 @@ export class TunnelManager {
     });
   }
 
-  private startNgrok(): Promise<string> {
+  private startNgrok(bin: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const child = spawn("ngrok", ["http", String(this.port), "--log", "stdout"], {
+      const child = spawn(bin, ["http", String(this.port), "--log", "stdout"], {
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
       });
       this.child = child;
       let tries = 0;
