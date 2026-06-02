@@ -9,7 +9,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -617,7 +617,51 @@ wss.on("connection", (ws: WebSocket, sessionId: string, deviceId?: string, label
   });
 });
 
+// When launched as the .exe, replace a previous Web2cmd instance still holding our port (so
+// double-clicking again "just works" instead of opening the stale one). Only kills a process that
+// is actually a Web2cmd server (verified via /api/health) — never an unrelated app on the port.
+async function takeOverPort(): Promise<void> {
+  if (process.env.WEB2CMD_AUTO_OPEN !== "1" || process.platform !== "win32") return;
+  let ours = false;
+  try {
+    const r = await fetch(`http://127.0.0.1:${cfg.port}/api/health`, { signal: AbortSignal.timeout(1500) });
+    ours = ((await r.json()) as { ok?: boolean }).ok === true;
+  } catch {
+    return; // nothing listening → port is free for us
+  }
+  if (!ours) return; // a non-Web2cmd app holds the port; let listen() fail with a clear error
+  try {
+    const out = execSync("netstat -ano", { encoding: "utf8", windowsHide: true });
+    const pids = new Set<string>();
+    for (const line of out.split(/\r?\n/)) {
+      if (/LISTENING/i.test(line) && new RegExp(`[:.]${cfg.port}\\b`).test(line)) {
+        const pid = line.trim().split(/\s+/).pop();
+        if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) pids.add(pid);
+      }
+    }
+    for (const pid of pids) {
+      try {
+        execSync(`taskkill /PID ${pid} /F /T`, { stdio: "ignore" }); // /T also stops its tunnel child
+      } catch {
+        /* ignore */
+      }
+    }
+    if (pids.size) console.log(`[web2cmd] replaced a previous instance on port ${cfg.port}`);
+  } catch {
+    /* ignore */
+  }
+  for (let i = 0; i < 25; i++) {
+    try {
+      await fetch(`http://127.0.0.1:${cfg.port}/api/health`, { signal: AbortSignal.timeout(700) });
+    } catch {
+      return; // connection refused → port freed
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
 async function start() {
+  await takeOverPort();
   await registerStatic();
   await app.ready();
   app.server.on("upgrade", (request, socket, head) => {
