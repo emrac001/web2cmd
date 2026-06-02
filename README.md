@@ -12,12 +12,12 @@ and keep moving.
 
 ## Screenshots
 
-| Operator Console (on your computer) | Driving Claude from a phone |
-| :---: | :---: |
-| ![Web2cmd Operator Console](docs/screenshot-console.png) | ![Web2cmd phone client driving Claude Code](docs/screenshot-client.png) |
+The **Operator Console** — served on localhost (the computer running the server). Start a tunnel,
+share the pairing code, manage clients, toggle the fence, all from here:
 
-<!-- Drop two images here: docs/screenshot-console.png (the localhost Operator Console) and
-     docs/screenshot-client.png (a phone running the client / driving Claude). They render above. -->
+<p align="center"><img src="docs/screenshot-console.png" alt="Web2cmd Operator Console" width="420"></p>
+
+<!-- A photo of a phone driving Claude would pair nicely here — add docs/screenshot-client.png. -->
 
 ## What you get
 
