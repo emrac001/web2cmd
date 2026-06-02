@@ -33,8 +33,13 @@ export interface ClientHandle {
   id: string;
   cols: number;
   rows: number;
+  /** display name + persistent device id (for the typing-lock identity) */
+  label: string;
+  deviceId?: string;
   /** push a chunk of terminal output to this client */
   send: (data: string) => void;
+  /** push a JSON control message (e.g. lock state) to this client */
+  sendControl: (msg: unknown) => void;
 }
 
 export interface SessionInfo {
@@ -67,6 +72,7 @@ export interface FenceSpawn {
 }
 
 const SCROLLBACK_BYTES = 256 * 1024;
+const TYPING_FREEZE_MS = 10_000; // after an admin release, the previous typist waits this long
 const DEFAULT_SHELL = process.platform === "win32" ? "pwsh.exe" : (process.env.SHELL || "bash");
 
 // --- "Claude is waiting" detection -----------------------------------------------------
@@ -128,6 +134,10 @@ class Session {
   private term: PtyNS.IPty;
   private clients = new Map<string, ClientHandle>();
   private scrollback = "";
+
+  // single-typist write lock
+  private lockHolder: string | null = null; // clientId currently allowed to type
+  private freezeUntil = new Map<string, number>(); // deviceId -> ts it may type again
 
   // waiting detection state
   private tail = "";
@@ -235,18 +245,94 @@ class Session {
     // replay current screen state to the freshly-attached client
     if (this.scrollback) client.send(this.scrollback);
     this.applySmallestSize();
+    this.broadcastLock(); // tell everyone (incl. the newcomer) who currently holds control
   }
 
   detach(clientId: string) {
+    if (this.lockHolder === clientId) this.lockHolder = null; // holder left → free the lock
     this.clients.delete(clientId);
     this.applySmallestSize();
+    this.broadcastLock();
   }
 
+  /** Raw write to the PTY — server-initiated (e.g. auto-starting Claude); bypasses the lock. */
   write(data: string) {
     if (!this.alive) return;
     // any input means the user responded — re-arm waiting detection for the next prompt
     this.notifiedWaiting = false;
     this.term.write(data);
+  }
+
+  // ---- single-typist write lock ----------------------------------------------------------
+  private freezeRemaining(deviceId?: string): number {
+    if (!deviceId) return 0;
+    return Math.max(0, (this.freezeUntil.get(deviceId) ?? 0) - Date.now());
+  }
+
+  private holderLabel(): string | null {
+    return this.lockHolder ? (this.clients.get(this.lockHolder)?.label ?? null) : null;
+  }
+
+  /** Tell each attached client the current lock state (tailored: youHold + their own freeze). */
+  private broadcastLock(): void {
+    const holderId = this.lockHolder;
+    const holderLabel = this.holderLabel();
+    for (const c of this.clients.values()) {
+      c.sendControl({
+        type: "lock",
+        holderId,
+        holderLabel,
+        youHold: holderId === c.id,
+        frozenMs: this.freezeRemaining(c.deviceId),
+      });
+    }
+  }
+
+  /** Client input, gated by the lock: the first typist takes control; others are read-only. */
+  handleInput(clientId: string, data: string): void {
+    if (!this.alive) return;
+    const c = this.clients.get(clientId);
+    if (!c) return;
+    if (this.lockHolder === clientId) {
+      this.write(data);
+    } else if (this.lockHolder === null) {
+      if (this.freezeRemaining(c.deviceId) > 0) return; // just released this device — frozen out
+      this.lockHolder = clientId;
+      this.broadcastLock();
+      this.write(data);
+    }
+    // else: someone else holds the lock → drop (read-only)
+  }
+
+  /** Release the lock. Admin release freezes the previous holder briefly; self-release doesn't. */
+  releaseLock(freeze: boolean): void {
+    if (!this.lockHolder) return;
+    if (freeze) {
+      const dev = this.clients.get(this.lockHolder)?.deviceId;
+      if (dev) this.freezeUntil.set(dev, Date.now() + TYPING_FREEZE_MS);
+    }
+    this.lockHolder = null;
+    this.broadcastLock();
+  }
+
+  /** Hand control to a specific client (admin). */
+  transferLock(toClientId: string): void {
+    if (!this.clients.has(toClientId)) return;
+    this.lockHolder = toClientId;
+    this.broadcastLock();
+  }
+
+  /** A client voluntarily gives up control (no freeze). */
+  selfRelease(clientId: string): void {
+    if (this.lockHolder === clientId) this.releaseLock(false);
+  }
+
+  lockInfo() {
+    return {
+      holderId: this.lockHolder,
+      holderLabel: this.holderLabel(),
+      clients: [...this.clients.values()].map((c) => ({ id: c.id, label: c.label })),
+    };
   }
 
   /** Update one client's dimensions, then size the PTY to the smallest client. */
@@ -332,6 +418,25 @@ export class SessionManager {
 
   list(): SessionInfo[] {
     return [...this.sessions.values()].map((s) => s.info());
+  }
+
+  /** Sessions enriched with lock + client info, for the operator console. */
+  adminList() {
+    return [...this.sessions.values()].map((s) => ({ ...s.info(), lock: s.lockInfo() }));
+  }
+
+  releaseControl(id: string): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    s.releaseLock(true);
+    return true;
+  }
+
+  transferControl(id: string, clientId: string): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    s.transferLock(clientId);
+    return true;
   }
 
   kill(id: string): boolean {

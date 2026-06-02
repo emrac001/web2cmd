@@ -85,6 +85,18 @@ export interface AdminDevice {
   lastSeen: number;
   revoked: boolean;
 }
+export interface AdminSession {
+  id: string;
+  title: string;
+  cwd: string;
+  clients: number;
+  alive: boolean;
+  lock: {
+    holderId: string | null;
+    holderLabel: string | null;
+    clients: Array<{ id: string; label: string }>;
+  };
+}
 export interface AdminStatus {
   authMode: "off" | "password";
   exposure: "local" | "remote";
@@ -140,14 +152,20 @@ export const api = {
     return token;
   },
   /** Exchange a one-time pairing code (+ password when required) for a long-lived device token. */
-  async pair(otp: string, password?: string): Promise<string> {
+  async pair(otp: string, password?: string, displayName?: string): Promise<string> {
     const { token } = await req<{ token: string }>("/api/pair", {
       method: "POST",
-      body: JSON.stringify({ otp, password }),
+      body: JSON.stringify({ otp, password, displayName }),
     });
     setToken(token);
     return token;
   },
+  /** Set this device's display name (its typing-lock identity). */
+  setDeviceName: (name: string) =>
+    req<{ ok: boolean; displayName: string | null }>("/api/device/name", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
   config: () => req<ServerConfig>("/api/config"),
   listSessions: () => req<{ sessions: SessionInfo[] }>("/api/sessions"),
   createSession: (body: {
@@ -210,6 +228,9 @@ export const api = {
     req<{ devices: AdminDevice[]; maxDevices: number; active: number }>("/api/admin/devices"),
   revokeDevice: (id: string) =>
     req<{ revoked: boolean }>(`/api/admin/devices/${id}/revoke`, { method: "POST" }),
+  adminSessions: () => req<{ sessions: AdminSession[] }>("/api/admin/sessions"),
+  releaseControl: (id: string) =>
+    req<{ released: boolean }>(`/api/admin/sessions/${id}/release`, { method: "POST" }),
   setMaxDevices: (max: number) =>
     req<{ maxDevices: number }>("/api/admin/max-devices", {
       method: "POST",

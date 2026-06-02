@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   api,
   type AdminDevice,
+  type AdminSession,
   type AdminStatus,
   type DirEntry,
   type TunnelProviderInfo,
@@ -50,15 +51,17 @@ export function OperatorConsole() {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [providers, setProviders] = useState<TunnelProviderInfo[]>([]);
   const [devices, setDevices] = useState<AdminDevice[]>([]);
+  const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      const [st, dv] = await Promise.all([api.adminStatus(), api.adminDevices()]);
+      const [st, dv, ss] = await Promise.all([api.adminStatus(), api.adminDevices(), api.adminSessions()]);
       setStatus(st);
       setDevices(dv.devices);
+      setSessions(ss.sessions);
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -202,6 +205,33 @@ export function OperatorConsole() {
           </label>
           <p className="mt-1 text-[11px] text-gray-500">A nudge that keeps the shell in this folder — not a hard jail.</p>
         </div>
+
+        {/* Active sessions + who's typing */}
+        {sessions.filter((s) => s.alive).length > 0 && (
+          <div className={card}>
+            <div className="mb-2 text-sm font-medium">Active sessions</div>
+            <div className="space-y-1.5">
+              {sessions.filter((s) => s.alive).map((s) => (
+                <div key={s.id} className="rounded-md border border-[var(--border)] bg-[#1a2030] p-2">
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-sm">{s.title}</span>
+                    <span className="shrink-0 text-[11px] text-gray-500">{s.clients} client(s)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-xs text-gray-400">
+                      {s.lock.holderLabel ? `🔒 ${s.lock.holderLabel} has control` : "🟢 control is free"}
+                    </span>
+                    {s.lock.holderId && (
+                      <button disabled={busy === "rel" + s.id} onClick={() => run("rel" + s.id, () => api.releaseControl(s.id))} className={btn}>
+                        {busy === "rel" + s.id ? "…" : "Release"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Clients */}
         <div className={card}>

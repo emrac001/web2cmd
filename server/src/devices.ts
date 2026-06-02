@@ -104,6 +104,14 @@ export class DeviceManager {
     }
   }
 
+  setName(id: string, name: string): boolean {
+    const d = this.get(id);
+    if (!d) return false;
+    d.displayName = name.trim().slice(0, 40) || null;
+    this.save();
+    return true;
+  }
+
   revoke(id: string): boolean {
     const d = this.get(id);
     if (!d || d.revoked) return false;

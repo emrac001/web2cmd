@@ -22,6 +22,7 @@ import {
   issueToken,
   setPassword,
   verifyPassword,
+  verifyToken,
 } from "./auth.js";
 import { ensureIdentity, fingerprint } from "./identity.js";
 import { currentOtp, rotateOtp, verifyOtp } from "./pairing.js";
@@ -223,6 +224,14 @@ app.post<{ Body: { otp?: string; password?: string; displayName?: string } }>(
     return { token: issueToken(cfg, "device", device.id), deviceId: device.id };
   },
 );
+
+// A client sets its own display name (used as its typing-lock identity).
+app.post<{ Body: { name?: string } }>("/api/device/name", async (req, reply) => {
+  const payload = verifyToken(cfg, extractToken(req.headers.authorization, undefined));
+  if (!payload?.deviceId) return reply.code(400).send({ error: "no device identity on this token" });
+  devices.setName(payload.deviceId, String(req.body?.name ?? ""));
+  return { ok: true, displayName: devices.get(payload.deviceId)?.displayName ?? null };
+});
 
 app.get("/api/config", async () => ({
   defaultCwd: cfg.defaultCwd,
@@ -483,6 +492,28 @@ app.post<{ Body: { on?: boolean } }>("/api/admin/fence", async (req, reply) => {
   return { fence: fenceEnabled };
 });
 
+// Sessions + their connected clients + who holds the typing lock (for the console).
+app.get("/api/admin/sessions", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  return { sessions: sessions.adminList() };
+});
+
+// Release the typing lock on a session (freezes the previous holder briefly).
+app.post<{ Params: { id: string } }>("/api/admin/sessions/:id/release", async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  return { released: sessions.releaseControl(req.params.id) };
+});
+
+// Hand the typing lock to a specific client.
+app.post<{ Params: { id: string }; Body: { clientId?: string } }>(
+  "/api/admin/sessions/:id/control",
+  async (req, reply) => {
+    if (!requireAdmin(req, reply)) return;
+    if (!req.body?.clientId) return reply.code(400).send({ error: "clientId required" });
+    return { ok: sessions.transferControl(req.params.id, req.body.clientId) };
+  },
+);
+
 // ---- static web app (SPA) -------------------------------------------------------------
 // Registered inside start() (before app.ready()) so this module has no top-level await — which
 // keeps it bundleable into the CJS single-file .exe.
@@ -509,7 +540,7 @@ async function registerStatic(): Promise<void> {
 // ---- WebSocket terminal bridge --------------------------------------------------------
 const wss = new WebSocketServer({ noServer: true });
 
-wss.on("connection", (ws: WebSocket, sessionId: string) => {
+wss.on("connection", (ws: WebSocket, sessionId: string, deviceId?: string, label?: string) => {
   const session = sessions.get(sessionId);
   if (!session) {
     ws.send(JSON.stringify({ type: "error", message: "session not found" }));
@@ -522,8 +553,13 @@ wss.on("connection", (ws: WebSocket, sessionId: string) => {
     id: clientId,
     cols: 80,
     rows: 24,
+    label: label || "Guest",
+    deviceId,
     send: (data) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "output", data }));
+    },
+    sendControl: (msg) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
     },
   });
 
@@ -537,7 +573,9 @@ wss.on("connection", (ws: WebSocket, sessionId: string) => {
       return;
     }
     if (msg.type === "input" && typeof msg.data === "string") {
-      session.write(msg.data);
+      session.handleInput(clientId, msg.data); // gated by the single-typist lock
+    } else if (msg.type === "release") {
+      session.selfRelease(clientId);
     } else if (msg.type === "resize" && msg.cols && msg.rows) {
       session.resizeClient(clientId, msg.cols, msg.rows);
     }
@@ -565,8 +603,14 @@ async function start() {
       return;
     }
     const sessionId = url.searchParams.get("session") || "";
+    // Resolve the device identity for the typing-lock label.
+    const payload = verifyToken(cfg, token);
+    const deviceId = payload?.deviceId;
+    if (deviceId) devices.touch(deviceId);
+    const dev = deviceId ? devices.get(deviceId) : undefined;
+    const label = dev?.displayName || (deviceId ? `Device ${deviceId.slice(0, 4)}` : "Local");
     wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit("connection", ws, sessionId);
+      wss.emit("connection", ws, sessionId, deviceId, label);
     });
   });
 

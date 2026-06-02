@@ -47,6 +47,8 @@ export function App() {
   const [pushBusy, setPushBusy] = useState(false);
   const [fenceDenials, setFenceDenials] = useState<FenceDenial[]>([]);
   const [hookMsg, setHookMsg] = useState<string | null>(null);
+  const [nameInput, setNameInput] = useState("");
+  const [nameMsg, setNameMsg] = useState<string | null>(null);
   const termRef = useRef<TerminalHandle>(null);
 
   const active = sessions.find((s) => s.id === activeId) || null;
@@ -419,6 +421,33 @@ export function App() {
                   </button>
                 </div>
               )}
+
+              {/* Your display name (the identity shown when you're the one typing) */}
+              <div className="mb-3 rounded-lg border border-[var(--border)] p-2.5">
+                <div className="mb-1.5 text-sm font-medium">🧑 Your name</div>
+                <div className="flex gap-2">
+                  <input
+                    value={nameInput}
+                    onChange={(e) => setNameInput(e.target.value)}
+                    placeholder="Shown when you type"
+                    className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[#0b0e14] px-2 py-1.5 text-sm outline-none"
+                  />
+                  <button
+                    onClick={async () => {
+                      try {
+                        await api.setDeviceName(nameInput.trim());
+                        setNameMsg("Saved");
+                      } catch (e) {
+                        setNameMsg((e as Error).message);
+                      }
+                    }}
+                    className="rounded-md border border-[var(--border)] bg-[#1a2030] px-3 py-1.5 text-sm"
+                  >
+                    Save
+                  </button>
+                </div>
+                {nameMsg && <p className="mt-1 text-xs text-gray-500">{nameMsg}</p>}
+              </div>
 
               {/* Project fence */}
               {info?.fence === "on" && (

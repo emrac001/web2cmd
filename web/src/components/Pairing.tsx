@@ -10,6 +10,7 @@ import { api, type ServerInfo } from "../lib/api";
 export function Pairing({ info, onPaired }: { info: ServerInfo; onPaired: () => void }) {
   const [otp, setOtp] = useState("");
   const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -20,7 +21,7 @@ export function Pairing({ info, onPaired }: { info: ServerInfo; onPaired: () => 
     setBusy(true);
     setError(null);
     try {
-      await api.pair(otp.trim(), needsPassword ? password : undefined);
+      await api.pair(otp.trim(), needsPassword ? password : undefined, name.trim() || undefined);
       localStorage.setItem("web2cmd_server_fp", info.identity.fingerprint);
       onPaired();
     } catch (err) {
@@ -59,6 +60,13 @@ export function Pairing({ info, onPaired }: { info: ServerInfo; onPaired: () => 
             className="mb-3 w-full rounded-lg border border-[var(--border)] bg-[#0b0e14] px-3 py-3 text-base outline-none focus:border-[var(--accent)]"
           />
         )}
+
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Your name (shown when you're typing)"
+          className="mb-3 w-full rounded-lg border border-[var(--border)] bg-[#0b0e14] px-3 py-3 text-base outline-none focus:border-[var(--accent)]"
+        />
 
         {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
 

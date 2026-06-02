@@ -67,6 +67,11 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
   const [alt, setAlt] = useState(false);
   const [atPrompt, setAtPrompt] = useState(false);
 
+  // typing-lock state (server-enforced single typist): ref for the input hot path, state for UI
+  type Lock = { holderLabel: string | null; youHold: boolean; frozenMs: number };
+  const lockRef = useRef<Lock | null>(null);
+  const [lock, setLock] = useState<Lock | null>(null);
+
   useImperativeHandle(ref, () => ({
     sendData: (data: string) => {
       routeRef.current(data);
@@ -142,6 +147,10 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
     // Route every input source (desktop, touch IME, touch toolbar) through one decision:
     // raw passthrough while a program is running / in a TUI / when forced; line-mode at the prompt.
     const routeInput = (data: string) => {
+      // Single-typist lock: if someone else holds it, or we're frozen after a release, we're
+      // read-only — drop input entirely (don't even local-echo). Free or held-by-us → proceed.
+      const lk = lockRef.current;
+      if (lk && !lk.youHold && (lk.holderLabel || lk.frozenMs > 0)) return;
       const raw = forceRawRef.current || altRef.current || !atPromptRef.current;
       if (raw) sendToPty(data);
       else editor.feed(data);
@@ -296,7 +305,14 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
         sendResize();
       };
       ws.onmessage = (ev) => {
-        let msg: { type?: string; data?: string; message?: string };
+        let msg: {
+          type?: string;
+          data?: string;
+          message?: string;
+          holderLabel?: string | null;
+          youHold?: boolean;
+          frozenMs?: number;
+        };
         try {
           msg = JSON.parse(ev.data);
         } catch {
@@ -305,7 +321,27 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
         if (msg.type === "output" && msg.data) {
           term.write(msg.data);
           updatePrompt(msg.data);
-        } else if (msg.type === "error") term.write(`\r\n\x1b[31m[${msg.message}]\x1b[0m\r\n`);
+        } else if (msg.type === "error") {
+          term.write(`\r\n\x1b[31m[${msg.message}]\x1b[0m\r\n`);
+        } else if (msg.type === "lock") {
+          const lk: Lock = {
+            holderLabel: msg.holderLabel ?? null,
+            youHold: Boolean(msg.youHold),
+            frozenMs: msg.frozenMs ?? 0,
+          };
+          lockRef.current = lk;
+          setLock(lk);
+          // Locally clear the freeze once it elapses (the server won't push another update).
+          if (lk.frozenMs > 0 && !lk.youHold) {
+            setTimeout(() => {
+              if (lockRef.current && !lockRef.current.youHold && lockRef.current.frozenMs > 0) {
+                const cleared = { ...lockRef.current, frozenMs: 0 };
+                lockRef.current = cleared;
+                setLock(cleared);
+              }
+            }, lk.frozenMs + 200);
+          }
+        }
       };
       ws.onclose = () => {
         onStatus?.("closed");
@@ -357,9 +393,37 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
     termRef.current?.focus();
   };
 
+  const releaseControl = () => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "release" }));
+  };
+
+  // Lock banner: read-only (someone else typing), frozen (just released), or you-have-control.
+  const readOnly = !!lock && !lock.youHold && (!!lock.holderLabel || lock.frozenMs > 0);
+  const banner = !lock
+    ? null
+    : lock.youHold
+      ? { text: "✋ You have control", cls: "bg-[var(--accent)]/20 text-[var(--accent)]", release: true }
+      : lock.holderLabel
+        ? { text: `🔒 ${lock.holderLabel} is typing — read only`, cls: "bg-black/60 text-gray-300", release: false }
+        : lock.frozenMs > 0
+          ? { text: `⏳ control released — wait ${Math.ceil(lock.frozenMs / 1000)}s`, cls: "bg-black/60 text-yellow-400", release: false }
+          : null;
+
   return (
     <div className="relative h-full w-full">
       <div ref={hostRef} className="h-full w-full" onClick={() => termRef.current?.focus()} />
+      {banner && (
+        <div className={`absolute left-1 top-1 z-10 flex items-center gap-2 rounded px-2 py-0.5 text-[11px] font-medium ${banner.cls}`}>
+          <span>{banner.text}</span>
+          {banner.release && (
+            <button onClick={releaseControl} className="rounded border border-[var(--border)] px-1.5 text-[10px]">
+              Release
+            </button>
+          )}
+        </div>
+      )}
+      {readOnly && <div className="pointer-events-none absolute inset-0 z-0 bg-black/10" />}
       <button
         onPointerDown={(e) => {
           e.preventDefault();
