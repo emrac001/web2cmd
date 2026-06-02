@@ -28,6 +28,13 @@ share the pairing code, manage clients, toggle the fence, all from here:
 - 🔔 **Push notifications** the moment Claude is waiting — even with the screen locked.
 - 🧰 **Operator console** to start/stop the tunnel, pick the project, cap & revoke clients.
 
+## Get started
+
+Two parts — you only ever run the **server**; the **client** is already hosted for everyone:
+
+1. **Server** — download **`web2cmd.exe`** ([Releases](../../releases)), double-click it; the Operator Console opens. Pick a project, start a tunnel.
+2. **Client** — open **[`https://emrac001.github.io/web2cmd/`](https://emrac001.github.io/web2cmd/)** on any device, enter your server's URL, pair with the code. Done.
+
 > ⚠️ **Read this first.** Web2cmd hands whoever can reach it **command execution on your computer,
 > as your user**. Run unauthenticated **only on localhost/LAN**. The moment you expose it
 > (a tunnel), a device must **pair** before it can connect, and your client **pins the server's
@@ -90,8 +97,10 @@ tunnel:
 
 1. The server console prints a **6-digit pairing code** (valid ~30 min). The Operator Console has a
    **New code** button, or press Enter in the server window, for a fresh one.
-2. Open the tunnel URL on your device (phone, tablet, another computer) → enter the code on the
-   **Pair this device** screen.
+2. On your device (phone, tablet, another computer) open the client —
+   **https://emrac001.github.io/web2cmd/** — enter your **tunnel URL**, then the code on the
+   **Pair this device** screen. (Opening the tunnel URL directly works too; the server serves the
+   same client.)
 3. The phone receives a long-lived **device token** and **pins the server's identity
    fingerprint** (shown on the pairing screen — confirm it matches the `identity:` line in the
    server console). Because the client trusts the *identity*, not the URL, a tunnel handing out a
@@ -112,30 +121,32 @@ pnpm --filter @web2cmd/server set-password -- "<your-strong-password>"
 
 If a password already exists, auth defaults to `password` (so existing setups keep gating).
 
-## Host the client yourself (GitHub Pages)
+## The client
 
-The web client is a **generic, static app** — it doesn't have to be served by your server. You can
-host it once at a stable URL (e.g. GitHub Pages) and point it at *any* Web2cmd server:
+The client is a **static web app, already hosted** — you don't install or deploy anything:
 
-- Install the PWA **once** from the stable `github.io` URL instead of re-adding the ephemeral
-  `trycloudflare` URL every time the tunnel restarts.
-- Anyone can run **their own** server and use the same hosted app pointed at **their own** tunnel —
-  nobody depends on a single tunnel for the app itself.
+> ### 👉 [`https://emrac001.github.io/web2cmd/`](https://emrac001.github.io/web2cmd/)
 
-On first load the app asks for your **server URL** (your tunnel or LAN address); it stores it and
-you pair once. Because the client trusts the server's pinned **identity**, not the URL, you just
-update the URL (☰ → Server → *Change server URL*) when the tunnel changes — your pairing and
-identity pin carry over.
+Open that on any device (phone, tablet, another computer), enter **your own server's URL** (your
+tunnel or LAN address), and pair once. That's the whole client side — you only ever **run and
+manage your own server**.
 
-> The static client still needs to *reach* the server on your computer, so a tunnel/LAN is required
-> for the connection — Pages only removes the dependency on a tunnel to **deliver the app**.
+- It runs **entirely in your browser** and talks **directly to your server** — your terminal
+  traffic never passes through whoever hosts the page. One shared client, everyone's own server.
+- The client pins your server's **identity**, not its URL, so it connects to exactly the server you
+  pointed it at; a changed or impostor identity is caught and blocked. When your tunnel restarts
+  with a new URL, just update it (☰ → Server → *Change server URL*) — your pairing carries over.
+- **Add to Home Screen** to use it like an app (and to enable push notifications).
 
-**Deploy:** the repo ships `.github/workflows/pages.yml`. In your fork: **Settings → Pages → Source
-= GitHub Actions**, then push to `main`. The app builds with `base=/<repo>/` and deploys to
-`https://<you>.github.io/<repo>/`. The server it talks to must allow the Pages origin for CORS —
-that's automatic (origins are reflected), or restrict it with `WEB2CMD_ALLOW_ORIGIN`.
+<details><summary><b>Self-hosting the client (optional — it's open source)</b></summary>
 
-To build the hosted client locally: `WEB2CMD_BASE=/<repo>/ pnpm --filter @web2cmd/web build`.
+You can host your own copy instead of using the link above. The repo ships
+`.github/workflows/pages.yml`: in your fork, set **Settings → Pages → Source = GitHub Actions** and
+push to `main` — it deploys to `https://<you>.github.io/<repo>/`. Any server accepts it via CORS
+automatically (origins are reflected; restrict with `WEB2CMD_ALLOW_ORIGIN`). Local build:
+`WEB2CMD_BASE=/<repo>/ pnpm --filter @web2cmd/web build`.
+
+</details>
 
 ## Single .exe (one-click)
 
