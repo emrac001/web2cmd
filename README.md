@@ -116,15 +116,21 @@ that's automatic (origins are reflected), or restrict it with `WEB2CMD_ALLOW_ORI
 
 To build the hosted client locally: `WEB2CMD_BASE=/<repo>/ pnpm --filter @web2cmd/web build`.
 
-## Package as a single .exe
+## Single .exe (one-click)
 
-Ship the server as one self-contained Windows executable (Node SEA — bundles the server, the web
-build, and node-pty; the native files self-extract to `%LOCALAPPDATA%\Web2cmd` on first run):
+Web2cmd ships as one self-contained Windows executable (Node SEA — bundles the server, the web
+build, and node-pty; the native files self-extract to `%LOCALAPPDATA%\Web2cmd` on first run).
+**Double-click it and the Operator Console opens in your browser** — pick a project folder, start a
+tunnel, and share the URL + pairing code. No terminal, no scripts.
 
-```powershell
-pnpm build:exe        # → build\exe\web2cmd.exe   (needs network once, for `postject`)
-.\build\exe\web2cmd.exe
-```
+- **Download:** grab `web2cmd.exe` from the repo's [Releases](../../releases).
+- **Build it yourself:**
+  ```powershell
+  pnpm build:exe        # → build\exe\web2cmd.exe   (needs network once, for `postject`)
+  .\build\exe\web2cmd.exe
+  ```
+- **Cut a release:** push a tag (`git tag v0.2.0 && git push --tags`) — `.github/workflows/release.yml`
+  builds the `.exe` on a Windows runner and attaches it to the GitHub Release.
 
 Currently produces a **win32-x64** binary. For a real release, **code-sign** it (`postject`
 invalidates the original Node signature).

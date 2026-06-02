@@ -61,6 +61,8 @@ function runBootstrap(): void {
   if (!process.env.WEB2CMD_DATA_DIR) {
     process.env.WEB2CMD_DATA_DIR = join(baseDir, "data");
   }
+  // Running as the packaged .exe → open the operator Console in the browser once we're listening.
+  process.env.WEB2CMD_AUTO_OPEN = "1";
   // Re-read NODE_PATH so require() picks up the extracted node_modules (for node-pty).
   (Module as unknown as { _initPaths(): void })._initPaths();
 }

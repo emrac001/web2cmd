@@ -9,6 +9,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -615,6 +616,19 @@ async function start() {
   });
 
   await app.listen({ host: cfg.host, port: cfg.port });
+  // Packaged .exe: pop the operator Console in the default browser (WEB2CMD_NO_OPEN=1 to disable).
+  if (
+    process.env.WEB2CMD_AUTO_OPEN === "1" &&
+    process.env.WEB2CMD_NO_OPEN !== "1" &&
+    process.platform === "win32"
+  ) {
+    try {
+      const url = `http://localhost:${cfg.port}`;
+      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+    } catch {
+      /* no browser — operator can open the URL manually */
+    }
+  }
   console.log(`\n[web2cmd] listening on http://${cfg.host}:${cfg.port}`);
   console.log(`[web2cmd] auth: ${cfg.authMode}  ·  exposure: ${cfg.exposure}  ·  fence: ${cfg.fence}`);
   console.log(`[web2cmd] identity: ${identityFp}`);

@@ -1,0 +1,45 @@
+name: Release web2cmd.exe
+
+# Builds the single-file Windows executable and attaches it to a GitHub Release.
+# Triggers on a version tag (e.g. `git tag v0.2.0 && git push --tags`) or manual dispatch.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+        default: v0.0.0-test
+
+permissions:
+  contents: write # create the release + upload the asset
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Node first (24): pnpm 11 needs Node >= 22.13.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Build web + server, then package the .exe
+        run: |
+          pnpm build
+          node scripts/build-exe.mjs
+      - name: Publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $notes = "Web2cmd $env:TAG - single-file Windows server. Download web2cmd.exe and double-click; the operator console opens in your browser."
+          gh release view "$env:TAG" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:TAG" "build/exe/web2cmd.exe" --clobber
+          } else {
+            gh release create "$env:TAG" "build/exe/web2cmd.exe" --title "$env:TAG" --notes "$notes"
+          }
