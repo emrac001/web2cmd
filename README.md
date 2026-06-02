@@ -1,16 +1,18 @@
 # Web2cmd
 
-A mobile-first **web terminal + file editor** that drives a shell — including **Claude Code** —
-running on *your own laptop*. Open it on your phone, pick a project folder, start Claude, and
-answer its confirmation prompts from anywhere. The same live session is shared between your
-laptop and your phone simultaneously.
+A **web terminal + file editor** that drives a shell — including **Claude Code** — running on
+*your own computer*. Open it from **any device with a browser** — phone, tablet, or another
+computer — pick a project folder, start Claude, and answer its confirmation prompts from anywhere.
+The same live session is shared across every connected device at once. The UI is **mobile-first**
+because a phone is the most common client, but it's not phone-only.
 
-Built for one specific pain: Claude pauses for a confirmation while you're away from the
-laptop, and the work stalls. With Web2cmd you confirm from your phone and keep moving.
+Built for one specific pain: Claude pauses for a confirmation while you're away from your
+computer, and the work stalls. With Web2cmd you confirm from your phone (or whatever's in reach)
+and keep moving.
 
 ## Screenshots
 
-| Operator Console (on the laptop) | Driving Claude from a phone |
+| Operator Console (on your computer) | Driving Claude from a phone |
 | :---: | :---: |
 | ![Web2cmd Operator Console](docs/screenshot-console.png) | ![Web2cmd phone client driving Claude Code](docs/screenshot-client.png) |
 
@@ -19,14 +21,14 @@ laptop, and the work stalls. With Web2cmd you confirm from your phone and keep m
 
 ## What you get
 
-- 📱 **Drive Claude Code from your phone** — answer its confirmation prompts from anywhere.
-- 🖥️ **One-click server** — a single `web2cmd.exe`; double-click and the Operator Console opens.
+- 📱 **Drive Claude Code from any device** — phone, tablet, or another computer; answer its prompts from anywhere (mobile-first UI).
+- 🖥️ **One-click server** — a single `web2cmd.exe` on your computer; double-click and the Operator Console opens.
 - 🔗 **Pair once** — short code + pinned server identity; the tunnel URL can change freely.
 - 👥 **Multiple clients, one shared shell** — with a single-typist lock so nobody clobbers anyone.
 - 🔔 **Push notifications** the moment Claude is waiting — even with the screen locked.
 - 🧰 **Operator console** to start/stop the tunnel, pick the project, cap & revoke clients.
 
-> ⚠️ **Read this first.** Web2cmd hands whoever can reach it **command execution on your laptop,
+> ⚠️ **Read this first.** Web2cmd hands whoever can reach it **command execution on your computer,
 > as your user**. Run unauthenticated **only on localhost/LAN**. The moment you expose it
 > (a tunnel), a device must **pair** before it can connect, and your client **pins the server's
 > identity**. The project fence keeps *normal* use inside the chosen folder but is **not a jail** —
@@ -37,14 +39,14 @@ laptop, and the work stalls. With Web2cmd you confirm from your phone and keep m
 ## How it works
 
 ```
- phone browser ─┐
-                ├─(WSS over tunnel)─► Web2cmd server (your laptop) ─► pwsh PTY ─► claude
- laptop browser ┘                         │
-                                          └─ one shared shell per project
+ phone ───┐
+ tablet ──┼─(WSS over tunnel)─► Web2cmd server (your computer) ─► pwsh PTY ─► claude
+ desktop ─┘   any browser           │
+                                    └─ one shared shell per project
 ```
 
-- **One shared shell per project.** Every client (phone, laptop browser) attaches to the *same*
-  PTY: output is broadcast to all, and either side can run the next command and continue.
+- **One shared shell per project.** Every client (phone, tablet, another computer) attaches to the
+  *same* PTY: output is broadcast to all, and any of them can run the next command and continue.
 - **Broadcast on submit, not keystrokes.** At the shell prompt your typing stays local and is
   sent only when you press Enter, so another viewer never sees your half-typed line — they see
   committed commands and their output. Inside full-screen TUIs (Claude's menus, vim) input is
@@ -71,7 +73,7 @@ pnpm build          # build web app + server
 folder, choose **Start Claude** / **Resume Claude** / **Shell only**, and go. The bottom toolbar
 provides keys phones lack (Esc, Tab, arrows, Ctrl combos, Paste).
 
-## Remote access (phone over a tunnel)
+## Remote access (any device over a tunnel)
 
 ```powershell
 .\start.ps1 -Tunnel cloudflare    # prints a https://<random>.trycloudflare.com URL
@@ -88,7 +90,8 @@ tunnel:
 
 1. The server console prints a **6-digit pairing code** (valid ~30 min). The Operator Console has a
    **New code** button, or press Enter in the server window, for a fresh one.
-2. Open the tunnel URL on your phone → enter the code on the **Pair this device** screen.
+2. Open the tunnel URL on your device (phone, tablet, another computer) → enter the code on the
+   **Pair this device** screen.
 3. The phone receives a long-lived **device token** and **pins the server's identity
    fingerprint** (shown on the pairing screen — confirm it matches the `identity:` line in the
    server console). Because the client trusts the *identity*, not the URL, a tunnel handing out a
@@ -124,8 +127,8 @@ you pair once. Because the client trusts the server's pinned **identity**, not t
 update the URL (☰ → Server → *Change server URL*) when the tunnel changes — your pairing and
 identity pin carry over.
 
-> The static client still needs to *reach* your laptop's server, so a tunnel/LAN is required for
-> the connection — Pages only removes the dependency on a tunnel to **deliver the app**.
+> The static client still needs to *reach* the server on your computer, so a tunnel/LAN is required
+> for the connection — Pages only removes the dependency on a tunnel to **deliver the app**.
 
 **Deploy:** the repo ships `.github/workflows/pages.yml`. In your fork: **Settings → Pages → Source
 = GitHub Actions**, then push to `main`. The app builds with `base=/<repo>/` and deploys to
@@ -219,7 +222,7 @@ access is **not contained**.
 
 **Bottom line:** the security boundary is *who you let connect* (keep it local, or require
 pairing + a password for remote), **not** the in-shell fence. Don't expose Web2cmd to people you
-wouldn't hand a terminal on your laptop. For defence in depth on a public tunnel, put an access
+wouldn't hand a terminal on your computer. For defence in depth on a public tunnel, put an access
 proxy (e.g. Cloudflare Access) in front of it.
 
 ---
@@ -277,7 +280,7 @@ attach/attach.mjs native terminal client for the shared session (password/token 
 start.ps1         launcher (server + optional tunnel; sets exposure + prints pairing code)
 ```
 
-### Advanced: attach a native laptop terminal
+### Advanced: attach a native terminal on the server machine
 
 A native PowerShell window the server spawns is invisible to other clients. To mirror the shared
 session in a real terminal instead (works in `password` mode, or pass an existing `--token`):
