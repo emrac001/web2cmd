@@ -61,6 +61,10 @@ provides keys phones lack (Esc, Tab, arrows, Ctrl combos, Paste).
 .\start.ps1 -Tunnel ngrok
 ```
 
+**Stopping:** if you started it in a terminal, press **Ctrl+C** there (it cleans up the server +
+tunnel). If it's running in the background, run `.\stop.ps1` (stops the server on port 8787 and any
+cloudflared/ngrok tunnel).
+
 When exposed remotely, Web2cmd **requires pairing** — an open terminal is never served over a
 tunnel:
 
