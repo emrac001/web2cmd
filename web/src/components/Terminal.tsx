@@ -72,6 +72,10 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
   const lockRef = useRef<Lock | null>(null);
   const [lock, setLock] = useState<Lock | null>(null);
 
+  // detected option menu (tap-to-select) — the selection prototype
+  type Prompt = { question: string; options: { key: string; label: string }[] };
+  const [prompt, setPrompt] = useState<Prompt | null>(null);
+
   useImperativeHandle(ref, () => ({
     sendData: (data: string) => {
       routeRef.current(data);
@@ -312,6 +316,7 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
           holderLabel?: string | null;
           youHold?: boolean;
           frozenMs?: number;
+          prompt?: { question: string; options: { key: string; label: string }[] } | null;
         };
         try {
           msg = JSON.parse(ev.data);
@@ -341,6 +346,8 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
               }
             }, lk.frozenMs + 200);
           }
+        } else if (msg.type === "prompt") {
+          setPrompt(msg.prompt && msg.prompt.options?.length ? msg.prompt : null);
         }
       };
       ws.onclose = () => {
@@ -398,6 +405,14 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "release" }));
   };
 
+  // Tap-to-select: send the option's keystroke straight to the PTY (server enforces the lock).
+  const sendKey = (k: string) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "input", data: k }));
+    setPrompt(null);
+    termRef.current?.focus();
+  };
+
   // Lock banner: read-only (someone else typing), frozen (just released), or you-have-control.
   const readOnly = !!lock && !lock.youHold && (!!lock.holderLabel || lock.frozenMs > 0);
   const banner = !lock
@@ -438,6 +453,35 @@ export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
       >
         ⌨ {modeLabel}
       </button>
+      {prompt && (
+        <div className="absolute inset-x-0 bottom-0 z-20 border-t border-[var(--border)] bg-[var(--panel)]/95 px-2 py-2">
+          <div className="mb-1.5 line-clamp-2 text-xs text-gray-300">{prompt.question}</div>
+          <div className="flex flex-wrap gap-1.5">
+            {prompt.options.map((o) => (
+              <button
+                key={o.key}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  sendKey(o.key);
+                }}
+                className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-3 py-2 text-sm font-medium text-black active:scale-95"
+              >
+                {o.label}
+              </button>
+            ))}
+            <button
+              onPointerDown={(e) => {
+                e.preventDefault();
+                setPrompt(null);
+              }}
+              className="rounded-md border border-[var(--border)] px-2 py-2 text-xs text-gray-400"
+              title="Dismiss (answer in the terminal instead)"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

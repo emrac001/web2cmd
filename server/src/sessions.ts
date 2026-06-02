@@ -122,6 +122,53 @@ function promptSnippet(text: string): string {
   return (q || lines[lines.length - 1] || "Claude needs your input").slice(0, 140);
 }
 
+export interface PromptOption {
+  key: string; // the keystroke to send (a digit, for Claude's numbered menus)
+  label: string;
+}
+export interface PromptInfo {
+  question: string;
+  options: PromptOption[];
+}
+
+/**
+ * Parse a numbered option menu out of the (ANSI-stripped) idle screen, e.g. Claude's permission
+ * prompt: "Do you want to make this edit? / ❯ 1. Yes / 2. Yes, and don't ask / 3. No". Returns the
+ * options (deduped by number, latest paint wins) + the question line, or null if it's not a menu.
+ */
+export function parsePrompt(text: string): PromptInfo | null {
+  const lines = text.split(/\r?\n/);
+  const byKey = new Map<string, string>();
+  for (const raw of lines) {
+    // leading selector/box chars, "N." or "N)", the label, then trailing padding/box chars
+    const m = raw.match(/^[\s❯>›»*│|]*([1-9])[.)]\s+(.+?)[\s│|]*$/);
+    if (m) {
+      const label = m[2]
+        .replace(/\s+/g, " ")
+        .replace(/\s*\((esc|enter|return)\)\s*$/i, "")
+        .trim()
+        .slice(0, 60);
+      if (label) byKey.set(m[1], label); // redraws repeat the menu — keep the latest
+    }
+  }
+  if (byKey.size < 2) return null;
+  const options = [...byKey.entries()]
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map(([key, label]) => ({ key, label }));
+  const clean = (l: string) => l.replace(/^[\s│|>❯]+|[\s│|]+$/g, "").replace(/\s+/g, " ");
+  const question =
+    [...lines]
+      .map(clean)
+      .reverse()
+      .find(
+        (l) =>
+          l &&
+          /\?|do you want|proceed|allow|continue|run |edit/i.test(l) &&
+          !/^[❯>›»*│|\s]*[1-9][.)]/.test(l),
+      ) || "Choose an option";
+  return { question: question.slice(0, 160), options };
+}
+
 class Session {
   readonly id = randomUUID();
   readonly createdAt = Date.now();
@@ -138,6 +185,10 @@ class Session {
   // single-typist write lock
   private lockHolder: string | null = null; // clientId currently allowed to type
   private freezeUntil = new Map<string, number>(); // deviceId -> ts it may type again
+
+  // current detected option menu (for tappable selection on the client)
+  private currentPrompt: PromptInfo | null = null;
+  private lastPromptKey = "";
 
   // waiting detection state
   private tail = "";
@@ -232,8 +283,11 @@ class Session {
             this.tail,
           )}`,
         );
-      if (!this.alive || this.notifiedWaiting) return;
-      if (looksLikePrompt(this.tail)) {
+      if (!this.alive) return;
+      // tap-to-select: surface any option menu on the current idle screen to all clients
+      this.broadcastPrompt(parsePrompt(this.tail));
+      // push notification: fire once per prompt
+      if (!this.notifiedWaiting && looksLikePrompt(this.tail)) {
         this.notifiedWaiting = true;
         this.onWaiting?.(promptSnippet(this.tail));
       }
@@ -246,6 +300,7 @@ class Session {
     if (this.scrollback) client.send(this.scrollback);
     this.applySmallestSize();
     this.broadcastLock(); // tell everyone (incl. the newcomer) who currently holds control
+    if (this.currentPrompt) client.sendControl({ type: "prompt", prompt: this.currentPrompt });
   }
 
   detach(clientId: string) {
@@ -258,8 +313,9 @@ class Session {
   /** Raw write to the PTY — server-initiated (e.g. auto-starting Claude); bypasses the lock. */
   write(data: string) {
     if (!this.alive) return;
-    // any input means the user responded — re-arm waiting detection for the next prompt
+    // any input means the user responded — re-arm waiting detection + drop the option menu
     this.notifiedWaiting = false;
+    this.broadcastPrompt(null);
     this.term.write(data);
   }
 
@@ -333,6 +389,17 @@ class Session {
       holderLabel: this.holderLabel(),
       clients: [...this.clients.values()].map((c) => ({ id: c.id, label: c.label })),
     };
+  }
+
+  // ---- detected option menu (tap-to-select) ---------------------------------------------
+  /** Broadcast the current option menu (or clear it) to all clients, only when it changes. */
+  private broadcastPrompt(prompt: PromptInfo | null): void {
+    const key = prompt ? JSON.stringify(prompt) : "";
+    if (key === this.lastPromptKey) return;
+    this.lastPromptKey = key;
+    this.currentPrompt = prompt;
+    const msg = { type: "prompt", prompt };
+    for (const c of this.clients.values()) c.sendControl(msg);
   }
 
   /** Update one client's dimensions, then size the PTY to the smallest client. */
